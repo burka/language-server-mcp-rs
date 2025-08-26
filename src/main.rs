@@ -15,7 +15,7 @@ use tracing::{error, info};
 use tracing_subscriber::{self, EnvFilter};
 
 mod lsp_client;
-use lsp_client::LspClient;
+use lsp_client::{LspClient, MAX_SYMBOLS_COUNT};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct HoverRequest {
@@ -96,6 +96,18 @@ pub struct ExpandMacroRequest {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DocumentSymbolsRequest {
     pub file_path: String,
+    #[serde(default = "default_page")]
+    pub page: usize,
+    #[serde(default = "default_page_size")]
+    pub page_size: usize,
+}
+
+fn default_page() -> usize {
+    0
+}
+
+fn default_page_size() -> usize {
+    MAX_SYMBOLS_COUNT
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -808,9 +820,12 @@ impl RustAnalyzerMCP {
             Ok(Some(response)) => {
                 use lsp_types::DocumentSymbolResponse;
                 let symbols_text = match response {
-                    DocumentSymbolResponse::Flat(symbols) => symbols
-                        .into_iter()
-                        .map(|symbol| {
+                    DocumentSymbolResponse::Flat(symbols) => {
+                        let total_symbols = symbols.len();
+                        let start_idx = request.page * request.page_size;
+                        let page_symbols: Vec<_> = symbols.into_iter().skip(start_idx).take(request.page_size).collect();
+                        
+                        let symbols_text = page_symbols.into_iter().map(|symbol| {
                             let location = &symbol.location;
                             let file_path = location
                                 .uri
@@ -833,10 +848,23 @@ impl RustAnalyzerMCP {
                                 location.range.start.character + 1,
                                 container
                             )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
+                        }).collect::<Vec<_>>().join("\n");
+                        
+                        let page_info = if total_symbols > request.page_size {
+                            let total_pages = (total_symbols + request.page_size - 1) / request.page_size;
+                            format!("\n\n--- Page {} of {} ({} total symbols, {} per page) ---", 
+                                   request.page + 1, total_pages, total_symbols, request.page_size)
+                        } else {
+                            format!("\n\n--- {} symbols total ---", total_symbols)
+                        };
+                        
+                        format!("{}{}", symbols_text, page_info)
+                    }
                     DocumentSymbolResponse::Nested(symbols) => {
+                        let total_symbols = symbols.len();
+                        let start_idx = request.page * request.page_size;
+                        let page_symbols: Vec<_> = symbols.into_iter().skip(start_idx).take(request.page_size).collect();
+                        
                         fn format_nested_symbols(
                             symbols: Vec<lsp_types::DocumentSymbol>,
                             indent: usize,
@@ -870,7 +898,18 @@ impl RustAnalyzerMCP {
                                 .collect::<Vec<_>>()
                                 .join("\n")
                         }
-                        format_nested_symbols(symbols, 0)
+                        
+                        let nested_text = format_nested_symbols(page_symbols, 0);
+                        
+                        let page_info = if total_symbols > request.page_size {
+                            let total_pages = (total_symbols + request.page_size - 1) / request.page_size;
+                            format!("\n\n--- Page {} of {} ({} total symbols, {} per page) ---", 
+                                   request.page + 1, total_pages, total_symbols, request.page_size)
+                        } else {
+                            format!("\n\n--- {} symbols total ---", total_symbols)
+                        };
+                        
+                        format!("{}{}", nested_text, page_info)
                     }
                 };
 
