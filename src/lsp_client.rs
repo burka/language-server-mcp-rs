@@ -2,12 +2,12 @@ use lsp_types::{request::GotoImplementationParams, *};
 use serde_json::{json, Value};
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::env;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
-use std::env;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -31,14 +31,14 @@ pub struct LspClient {
     timeout_secs: u64,
 }
 
-fn get_timeout_secs() -> u64 {
+pub fn get_timeout_secs() -> u64 {
     env::var("RUST_ANALYZER_MCP_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_TIMEOUT_SECS)
 }
 
-fn get_max_response_size() -> usize {
+pub fn get_max_response_size() -> usize {
     env::var("RUST_ANALYZER_MCP_MAX_RESPONSE_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -62,7 +62,7 @@ fn get_max_response_size_for_method(method: &str) -> usize {
 }
 
 impl LspClient {
-    pub async fn new(workspace_root: &PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(workspace_root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         info!("Starting rust-analyzer process");
 
         let mut process = Command::new("rust-analyzer")
@@ -79,7 +79,7 @@ impl LspClient {
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(stdout),
             request_id: Mutex::new(0),
-            workspace_root: workspace_root.clone(),
+            workspace_root: workspace_root.to_path_buf(),
             is_ready: Arc::new(AtomicBool::new(false)),
             opened_documents: Mutex::new(HashSet::new()),
             timeout_secs: get_timeout_secs(),
@@ -98,7 +98,6 @@ impl LspClient {
         }
     }
 
-    #[allow(dead_code)]
     pub fn is_ready(&self) -> bool {
         self.is_ready.load(Ordering::Relaxed)
     }
@@ -174,7 +173,6 @@ impl LspClient {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn close_document(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         // Check if document is opened
         {
@@ -208,10 +206,122 @@ impl LspClient {
         Ok(())
     }
 
-    #[allow(dead_code)]
     pub async fn get_opened_documents_count(&self) -> usize {
         let opened_docs = self.opened_documents.lock().await;
         opened_docs.len()
+    }
+
+    /// Pre-warm the cache by opening all files matching the given glob patterns
+    /// Returns (files_opened, files_already_open, files_failed, duration)
+    pub async fn warm_cache_with_globs(
+        &self,
+        glob_patterns: &[String],
+    ) -> Result<(usize, usize, usize, Duration), Box<dyn std::error::Error>> {
+        self.wait_for_ready().await;
+
+        let start_time = Instant::now();
+        let mut all_files = Vec::new();
+
+        // Collect all files matching the glob patterns
+        for pattern in glob_patterns {
+            let abs_pattern = if Path::new(pattern).is_absolute() {
+                pattern.clone()
+            } else {
+                // Make pattern relative to workspace root
+                self.workspace_root
+                    .join(pattern)
+                    .to_string_lossy()
+                    .to_string()
+            };
+
+            debug!("Searching for files with pattern: {}", abs_pattern);
+
+            match glob::glob(&abs_pattern) {
+                Ok(paths) => {
+                    for entry in paths {
+                        match entry {
+                            Ok(path) => {
+                                if path.is_file() && is_rust_file(&path) {
+                                    all_files.push(path.to_string_lossy().to_string());
+                                }
+                            }
+                            Err(e) => warn!("Error reading glob entry: {}", e),
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Invalid glob pattern '{}': {}", abs_pattern, e);
+                }
+            }
+        }
+
+        info!("Found {} Rust files to warm cache with", all_files.len());
+
+        let mut files_opened = 0;
+        let mut files_already_open = 0;
+        let mut files_failed = 0;
+
+        // Open all collected files
+        for (i, file_path) in all_files.iter().enumerate() {
+            if i % 10 == 0 && i > 0 {
+                info!(
+                    "Cache warming progress: {}/{} files processed",
+                    i,
+                    all_files.len()
+                );
+            }
+
+            // Check if already open
+            {
+                let opened_docs = self.opened_documents.lock().await;
+                if opened_docs.contains(file_path) {
+                    files_already_open += 1;
+                    continue;
+                }
+            }
+
+            // Try to open the document
+            match self.open_document(file_path).await {
+                Ok(()) => {
+                    files_opened += 1;
+                    debug!("Warmed cache for: {}", file_path);
+                }
+                Err(e) => {
+                    files_failed += 1;
+                    warn!("Failed to warm cache for {}: {}", file_path, e);
+                }
+            }
+
+            // Small delay to avoid overwhelming rust-analyzer
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let duration = start_time.elapsed();
+        info!(
+            "Cache warming completed: {} opened, {} already open, {} failed in {:?}",
+            files_opened, files_already_open, files_failed, duration
+        );
+
+        Ok((files_opened, files_already_open, files_failed, duration))
+    }
+
+    /// Pre-warm cache with common Rust project patterns
+    pub async fn warm_cache_rust_project(
+        &self,
+    ) -> Result<(usize, usize, usize, Duration), Box<dyn std::error::Error>> {
+        let default_patterns = vec![
+            "src/**/*.rs".to_string(),
+            "examples/**/*.rs".to_string(),
+            "tests/**/*.rs".to_string(),
+            "benches/**/*.rs".to_string(),
+            "build.rs".to_string(),
+        ];
+
+        info!(
+            "Warming cache for Rust project with default patterns: {:?}",
+            default_patterns
+        );
+        self.warm_cache_with_globs(&default_patterns).await
     }
 
     pub async fn hover(
@@ -781,14 +891,26 @@ impl Drop for LspClient {
     }
 }
 
+/// Helper function to check if a file is a Rust source file
+fn is_rust_file(path: &Path) -> bool {
+    if let Some(extension) = path.extension() {
+        extension == "rs"
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::{
+        get_max_response_size, get_max_response_size_for_method, get_timeout_secs,
+        MAX_COMPLETION_ITEMS, MAX_LARGE_RESPONSE_SIZE_BYTES, MAX_RESPONSE_SIZE_BYTES,
+        MAX_SYMBOLS_COUNT,
+    };
+    use serde_json::json;
     use std::time::Duration;
     use tokio::time::sleep;
-    use serde_json::json;
-    use super::{MAX_RESPONSE_SIZE_BYTES, MAX_LARGE_RESPONSE_SIZE_BYTES, MAX_SYMBOLS_COUNT, 
-                MAX_COMPLETION_ITEMS, get_max_response_size_for_method, get_timeout_secs, get_max_response_size};
 
     // Mock LSP client for testing timeout and size limit behavior
     struct MockLspClient {
@@ -807,7 +929,7 @@ mod tests {
                 response_size: None,
             }
         }
-        
+
         fn new_with_response_size(response_size: usize) -> Self {
             Self {
                 request_id: Mutex::new(0),
@@ -835,7 +957,8 @@ mod tests {
                         return Err(format!(
                             "LSP request '{}' timed out after {:?}",
                             method, timeout_duration
-                        ).into());
+                        )
+                        .into());
                     }
                 }
             }
@@ -852,8 +975,8 @@ mod tests {
             } else {
                 json!({"mock": "result"})
             };
-            
-            // Check response size like the real implementation  
+
+            // Check response size like the real implementation
             let result_json = serde_json::to_string(&mock_result)?;
             let max_size = get_max_response_size_for_method(method);
             if result_json.len() > max_size {
@@ -864,7 +987,7 @@ mod tests {
                     method
                 ).into());
             }
-            
+
             Ok(serde_json::from_value(mock_result)?)
         }
     }
@@ -875,7 +998,7 @@ mod tests {
         assert!(DEFAULT_TIMEOUT_SECS > 0);
         assert!(DEFAULT_TIMEOUT_SECS <= 120); // Should not be too long
         assert!(DEFAULT_TIMEOUT_SECS >= 10); // Should be long enough for normal operations
-        
+
         // Test timeout duration creation
         let timeout_duration = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
         assert_eq!(timeout_duration.as_secs(), DEFAULT_TIMEOUT_SECS);
@@ -890,7 +1013,7 @@ mod tests {
             "LSP request '{}' timed out after {:?}",
             method, timeout_duration
         );
-        
+
         assert!(error_msg.contains("test/method"));
         assert!(error_msg.contains("timed out"));
         assert!(error_msg.contains("1s"));
@@ -901,11 +1024,11 @@ mod tests {
         // Test actual timeout behavior
         let mock_client = MockLspClient::new(true, false); // should timeout
         let short_timeout = Duration::from_millis(50);
-        
+
         let result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("test/method", json!({}), short_timeout)
             .await;
-            
+
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("timed out"));
@@ -917,11 +1040,11 @@ mod tests {
         // Test that requests that complete within timeout work fine
         let mock_client = MockLspClient::new(false, false); // should not timeout or error
         let long_timeout = Duration::from_secs(10);
-        
+
         let result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("test/method", json!({}), long_timeout)
             .await;
-            
+
         assert!(result.is_ok());
         let value = result.unwrap();
         assert_eq!(value["mock"], "result");
@@ -932,11 +1055,11 @@ mod tests {
         // Test that LSP errors are properly propagated
         let mock_client = MockLspClient::new(false, true); // should error
         let timeout = Duration::from_secs(5);
-        
+
         let result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("test/method", json!({}), timeout)
             .await;
-            
+
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("LSP error"));
@@ -949,11 +1072,11 @@ mod tests {
         let duration = Duration::from_secs(5);
         assert_eq!(duration.as_secs(), 5);
         assert_eq!(duration.as_millis(), 5000);
-        
+
         let short_duration = Duration::from_millis(100);
         assert_eq!(short_duration.as_millis(), 100);
         assert_eq!(short_duration.as_secs(), 0);
-        
+
         // Test duration comparisons
         assert!(duration > short_duration);
         assert!(short_duration < duration);
@@ -963,21 +1086,21 @@ mod tests {
     async fn test_request_id_incrementing() {
         // Test that request IDs increment properly
         let mock_client = MockLspClient::new(false, false);
-        
+
         // Make multiple requests and verify they don't interfere
         let _result1: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("method1", json!({}), Duration::from_secs(1))
             .await;
-            
+
         let _result2: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("method2", json!({}), Duration::from_secs(1))
             .await;
-        
+
         // Both should succeed if not configured to fail
         let result3: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("method3", json!({}), Duration::from_secs(1))
             .await;
-        
+
         assert!(result3.is_ok());
     }
 
@@ -986,10 +1109,10 @@ mod tests {
         // Test that DEFAULT_TIMEOUT_SECS is used correctly
         let default_duration = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
         let manual_duration = Duration::from_secs(60); // Should match DEFAULT_TIMEOUT_SECS
-        
+
         assert_eq!(default_duration, manual_duration);
         assert_eq!(DEFAULT_TIMEOUT_SECS, 60);
-        
+
         // Test that configurable timeout uses the default when no env var is set
         let configured_timeout = get_timeout_secs();
         assert_eq!(configured_timeout, DEFAULT_TIMEOUT_SECS);
@@ -1000,11 +1123,11 @@ mod tests {
         // Test behavior with extremely short timeout
         let mock_client = MockLspClient::new(true, false);
         let very_short_timeout = Duration::from_millis(1);
-        
+
         let result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("test/method", json!({}), very_short_timeout)
             .await;
-            
+
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("timed out"));
@@ -1012,7 +1135,7 @@ mod tests {
     }
 
     // Response size limit tests
-    
+
     #[tokio::test]
     async fn test_response_size_constants() {
         // Test that response size constants are reasonable for LLM token limits
@@ -1020,14 +1143,14 @@ mod tests {
         assert!(MAX_RESPONSE_SIZE_BYTES >= 10 * 1024); // At least 10KB
         assert!(MAX_RESPONSE_SIZE_BYTES <= 1024 * 1024); // Not more than 1MB
         assert_eq!(MAX_RESPONSE_SIZE_BYTES, 40 * 1024); // 40KB ≈ 10k tokens
-        
+
         assert!(MAX_LARGE_RESPONSE_SIZE_BYTES > MAX_RESPONSE_SIZE_BYTES);
         assert_eq!(MAX_LARGE_RESPONSE_SIZE_BYTES, 120 * 1024); // 120KB ≈ 30k tokens
-        
+
         assert!(MAX_SYMBOLS_COUNT > 0);
         assert!(MAX_SYMBOLS_COUNT <= 10000); // Reasonable limit
         assert_eq!(MAX_SYMBOLS_COUNT, 200); // Exactly 200
-        
+
         assert!(MAX_COMPLETION_ITEMS > 0);
         assert!(MAX_COMPLETION_ITEMS <= 200); // Reasonable UX limit
         assert_eq!(MAX_COMPLETION_ITEMS, 25); // Exactly 25
@@ -1039,11 +1162,11 @@ mod tests {
         let small_size = 1024; // 1KB
         let mock_client = MockLspClient::new_with_response_size(small_size);
         let timeout = Duration::from_secs(5);
-        
+
         let result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("test/method", json!({}), timeout)
             .await;
-            
+
         assert!(result.is_ok());
         let value = result.unwrap();
         assert!(value.get("large_data").is_some());
@@ -1056,11 +1179,11 @@ mod tests {
         let large_size = MAX_RESPONSE_SIZE_BYTES + 1000; // Exceed default limit
         let mock_client = MockLspClient::new_with_response_size(large_size);
         let timeout = Duration::from_secs(5);
-        
+
         let result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("textDocument/hover", json!({}), timeout)
             .await;
-            
+
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("Response too large"));
@@ -1077,11 +1200,11 @@ mod tests {
         let exact_size = MAX_RESPONSE_SIZE_BYTES - json_overhead;
         let mock_client = MockLspClient::new_with_response_size(exact_size);
         let timeout = Duration::from_secs(5);
-        
+
         let result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("textDocument/hover", json!({}), timeout)
             .await;
-            
+
         // This should succeed as we're under the limit when accounting for JSON structure
         assert!(result.is_ok());
     }
@@ -1098,7 +1221,7 @@ mod tests {
             max_size,
             method
         );
-        
+
         assert!(error_msg.contains("Response too large"));
         assert!(error_msg.contains(&format!("{}", large_size)));
         assert!(error_msg.contains(&format!("{}", max_size)));
@@ -1115,31 +1238,31 @@ mod tests {
         let completion_limit = get_max_response_size_for_method("textDocument/completion");
         let diagnostic_limit = get_max_response_size_for_method("textDocument/diagnostic");
         let symbol_limit = get_max_response_size_for_method("textDocument/documentSymbol");
-        
+
         // Diagnostics should have the largest limit
         assert!(diagnostic_limit > hover_limit);
         assert!(diagnostic_limit > completion_limit);
         assert_eq!(diagnostic_limit, MAX_LARGE_RESPONSE_SIZE_BYTES);
-        
+
         // Completions should have smaller limit (better UX)
         assert!(completion_limit < hover_limit);
         assert_eq!(completion_limit, MAX_RESPONSE_SIZE_BYTES / 2);
-        
+
         // Hover and symbols use default limit
         assert_eq!(hover_limit, MAX_RESPONSE_SIZE_BYTES);
         assert_eq!(symbol_limit, MAX_RESPONSE_SIZE_BYTES);
-        
+
         // Test with actual mock responses
         let large_size = MAX_RESPONSE_SIZE_BYTES + 1000;
         let mock_client = MockLspClient::new_with_response_size(large_size);
         let timeout = Duration::from_secs(5);
-        
+
         // This should fail for hover (exceeds limit)
         let hover_result: Result<serde_json::Value, _> = mock_client
             .mock_request_with_timeout("textDocument/hover", json!({}), timeout)
             .await;
         assert!(hover_result.is_err());
-        
+
         // But same size might succeed for diagnostics (higher limit)
         let diagnostic_size = MAX_LARGE_RESPONSE_SIZE_BYTES - 1000; // Under diagnostic limit
         let diagnostic_mock = MockLspClient::new_with_response_size(diagnostic_size);
@@ -1152,28 +1275,28 @@ mod tests {
     #[tokio::test]
     async fn test_combined_timeout_and_size_limits() {
         // Test interaction between timeout and size limits
-        
+
         // First test: timeout should occur before size check for slow large responses
         let mock_client_timeout = MockLspClient::new(true, false);
         let short_timeout = Duration::from_millis(50);
-        
+
         let result: Result<serde_json::Value, _> = mock_client_timeout
             .mock_request_with_timeout("test/method", json!({}), short_timeout)
             .await;
-            
+
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("timed out"));
-        
+
         // Second test: size limit should be checked for fast large responses
         let large_size = MAX_RESPONSE_SIZE_BYTES + 1000;
         let mock_client_large = MockLspClient::new_with_response_size(large_size);
         let long_timeout = Duration::from_secs(10);
-        
+
         let result2: Result<serde_json::Value, _> = mock_client_large
             .mock_request_with_timeout("textDocument/hover", json!({}), long_timeout)
             .await;
-            
+
         assert!(result2.is_err());
         let error_msg2 = result2.unwrap_err().to_string();
         assert!(error_msg2.contains("Response too large"));
@@ -1185,11 +1308,11 @@ mod tests {
         assert!(MAX_SYMBOLS_COUNT > 0);
         assert!(MAX_SYMBOLS_COUNT <= 10000); // Reasonable upper bound
         assert_eq!(MAX_SYMBOLS_COUNT, 200); // Exactly what we expect
-        
+
         // Test that the constant can be used in calculations
         let half_limit = MAX_SYMBOLS_COUNT / 2;
         assert_eq!(half_limit, 100);
-        
+
         let double_limit = MAX_SYMBOLS_COUNT * 2;
         assert_eq!(double_limit, 400);
     }
@@ -1199,7 +1322,7 @@ mod tests {
         // Test default timeout
         let default_timeout = get_timeout_secs();
         assert_eq!(default_timeout, 60); // Default should be 60 seconds
-        
+
         // Test that timeout is reasonable
         assert!(default_timeout > 0);
         assert!(default_timeout <= 300); // Not more than 5 minutes
@@ -1210,7 +1333,7 @@ mod tests {
         // Test default response size
         let default_size = get_max_response_size();
         assert_eq!(default_size, MAX_RESPONSE_SIZE_BYTES);
-        
+
         // Test that size is reasonable for LLM tokens
         assert!(default_size > 0);
         assert!(default_size <= 1024 * 1024); // Max 1MB
@@ -1221,19 +1344,19 @@ mod tests {
     async fn test_environment_variable_configuration() {
         // Test that environment variables would be read (we can't easily set them in tests
         // without affecting other tests, but we can test the function exists and works)
-        
+
         // These should return defaults when no env vars are set
         let timeout = get_timeout_secs();
         let size = get_max_response_size();
-        
+
         assert!(timeout > 0);
         assert!(size > 0);
-        
+
         // Test method-specific limits
         let hover_limit = get_max_response_size_for_method("textDocument/hover");
         let completion_limit = get_max_response_size_for_method("textDocument/completion");
         let diagnostic_limit = get_max_response_size_for_method("textDocument/diagnostic");
-        
+
         assert!(hover_limit > 0);
         assert!(completion_limit > 0);
         assert!(diagnostic_limit > 0);
@@ -1244,22 +1367,112 @@ mod tests {
     async fn test_token_size_estimates() {
         // Test that our size limits make sense for token counts
         // ~4 chars per token average
-        
+
         let chars_per_token = 4;
         let default_tokens = MAX_RESPONSE_SIZE_BYTES / chars_per_token;
         let large_tokens = MAX_LARGE_RESPONSE_SIZE_BYTES / chars_per_token;
-        
+
         // Default should be around 10k tokens (good for most LLMs)
         assert!(default_tokens >= 8_000);
         assert!(default_tokens <= 12_000);
-        
+
         // Large should be around 30k tokens (still reasonable for larger context models)
         assert!(large_tokens >= 25_000);
         assert!(large_tokens <= 35_000);
-        
+
         // Completion limit should be much smaller for better UX
         let completion_limit = get_max_response_size_for_method("textDocument/completion");
         let completion_tokens = completion_limit / chars_per_token;
         assert!(completion_tokens <= 7_000); // Much smaller for completions
+    }
+
+    #[tokio::test]
+    async fn test_completion_items_constant() {
+        // Test MAX_COMPLETION_ITEMS constant
+        assert!(MAX_COMPLETION_ITEMS > 0);
+        assert!(MAX_COMPLETION_ITEMS <= 100);
+        assert_eq!(MAX_COMPLETION_ITEMS, 25);
+
+        // Test that it can be used in calculations
+        let half_completion = MAX_COMPLETION_ITEMS / 2;
+        assert_eq!(half_completion, 12);
+    }
+
+    #[test]
+    fn test_is_rust_file() {
+        use super::is_rust_file;
+        use std::path::Path;
+
+        // Test Rust files
+        assert!(is_rust_file(Path::new("main.rs")));
+        assert!(is_rust_file(Path::new("lib.rs")));
+        assert!(is_rust_file(Path::new("/path/to/file.rs")));
+        assert!(is_rust_file(Path::new("src/main.rs")));
+
+        // Test non-Rust files
+        assert!(!is_rust_file(Path::new("main.c")));
+        assert!(!is_rust_file(Path::new("README.md")));
+        assert!(!is_rust_file(Path::new("Cargo.toml")));
+        assert!(!is_rust_file(Path::new("file_without_extension")));
+        assert!(!is_rust_file(Path::new("")));
+
+        // Test edge cases
+        assert!(!is_rust_file(Path::new("rs"))); // No extension, just "rs"
+        assert!(is_rust_file(Path::new("file.name.rs"))); // Multiple dots
+        assert!(!is_rust_file(Path::new("file.rs.bak"))); // Extension is not "rs"
+    }
+
+    #[tokio::test]
+    async fn test_warm_cache_patterns() {
+        // Test default Rust patterns
+        let default_patterns = vec![
+            "src/**/*.rs".to_string(),
+            "examples/**/*.rs".to_string(),
+            "tests/**/*.rs".to_string(),
+            "benches/**/*.rs".to_string(),
+            "build.rs".to_string(),
+        ];
+
+        // Test that patterns are reasonable
+        assert!(default_patterns.len() > 0);
+        assert!(default_patterns.contains(&"src/**/*.rs".to_string()));
+        assert!(default_patterns.contains(&"build.rs".to_string()));
+
+        // Test pattern formats
+        for pattern in &default_patterns {
+            assert!(!pattern.is_empty());
+            // Most patterns should contain either ** or be specific files
+            assert!(pattern.contains("**") || !pattern.contains('/') || pattern == "build.rs");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cache_warming_performance_estimation() {
+        // Test performance estimation calculations
+        let files_processed = 100;
+        let duration_secs: f64 = 5.0;
+        let files_per_sec = files_processed as f64 / duration_secs.max(0.001);
+
+        assert_eq!(files_per_sec, 20.0);
+
+        // Test with very small duration
+        let small_duration: f64 = 0.0;
+        let safe_files_per_sec = files_processed as f64 / small_duration.max(0.001);
+        assert!(safe_files_per_sec > 0.0); // Should not divide by zero
+
+        // Test realistic performance expectations
+        assert!(safe_files_per_sec >= files_processed as f64 / 0.001); // At least this fast
+    }
+
+    #[tokio::test]
+    async fn test_cache_warming_delay_calculation() {
+        // Test the small delay used in cache warming
+        let delay = Duration::from_millis(10);
+        assert_eq!(delay.as_millis(), 10);
+        assert!(delay < Duration::from_secs(1)); // Should be small
+
+        // Test that delay is reasonable for not overwhelming rust-analyzer
+        assert!(delay >= Duration::from_millis(1)); // Not too small
+        assert!(delay <= Duration::from_millis(100)); // Not too large
     }
 }

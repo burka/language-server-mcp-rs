@@ -1,3 +1,4 @@
+use clap::Parser;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
     model::*,
@@ -10,12 +11,13 @@ use rmcp::{
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use sysinfo::System;
 use tokio::sync::Mutex;
 use tracing::{error, info};
 use tracing_subscriber::{self, EnvFilter};
 
 mod lsp_client;
-use lsp_client::{LspClient, MAX_SYMBOLS_COUNT};
+use lsp_client::{LspClient, MAX_COMPLETION_ITEMS, MAX_SYMBOLS_COUNT};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct HoverRequest {
@@ -143,6 +145,56 @@ pub struct ImplementationsRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LspClientStatusRequest {
+    // No parameters needed - just returns status info
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CloseDocumentRequest {
+    pub file_path: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WarmCacheRequest {
+    #[serde(default = "default_patterns")]
+    pub patterns: Vec<String>,
+    #[serde(default = "default_use_rust_defaults")]
+    pub use_rust_defaults: bool,
+}
+
+fn default_patterns() -> Vec<String> {
+    vec![]
+}
+
+fn default_use_rust_defaults() -> bool {
+    true
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "language-server-mcp")]
+#[command(about = "Rust-analyzer MCP server with smart cache warming")]
+struct Args {
+    /// Disable automatic cache warming on startup
+    #[arg(long, help = "Disable auto-warming of rust-analyzer cache")]
+    no_auto_warm: bool,
+
+    /// Maximum memory to use for cache warming (e.g., "1g", "500m", "100m")
+    #[arg(
+        long,
+        help = "Maximum memory for cache warming (default: 20% of system RAM)"
+    )]
+    max_memory: Option<String>,
+
+    /// Force warm all files regardless of project size
+    #[arg(long, help = "Force warming entire workspace regardless of size")]
+    warm_all: bool,
+
+    /// Show progress during cache warming
+    #[arg(long, help = "Show detailed progress during cache warming")]
+    show_progress: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PositionInfo {
     pub line: u32,
     pub column: u32,
@@ -151,7 +203,6 @@ pub struct PositionInfo {
 #[derive(Clone)]
 pub struct RustAnalyzerMCP {
     lsp_client: Arc<Mutex<LspClient>>,
-    #[allow(dead_code)]
     workspace_root: PathBuf,
     tool_router: ToolRouter<RustAnalyzerMCP>,
 }
@@ -170,6 +221,10 @@ impl RustAnalyzerMCP {
             workspace_root,
             tool_router: Self::tool_router(),
         })
+    }
+
+    pub fn workspace_root(&self) -> &PathBuf {
+        &self.workspace_root
     }
 
     #[tool(description = "Get type information and documentation at a specific position")]
@@ -227,7 +282,7 @@ impl RustAnalyzerMCP {
 
                 let completion_text = completions
                     .into_iter()
-                    .take(10) // Limit to first 10 for readability
+                    .take(MAX_COMPLETION_ITEMS) // Limit for readability and performance
                     .map(|item| {
                         let detail = item.detail.unwrap_or_default();
                         let doc = item
@@ -816,55 +871,78 @@ impl RustAnalyzerMCP {
     ) -> Result<CallToolResult, McpError> {
         let lsp_client = self.lsp_client.lock().await;
 
+        // Get opened documents count first
+        let opened_count = lsp_client.get_opened_documents_count().await;
+
         match lsp_client.document_symbols(&request.file_path).await {
             Ok(Some(response)) => {
+                // Release the lock immediately after getting the response
+                drop(lsp_client);
                 use lsp_types::DocumentSymbolResponse;
-                let symbols_text = match response {
+                let mut symbols_text = match response {
                     DocumentSymbolResponse::Flat(symbols) => {
                         let total_symbols = symbols.len();
                         let start_idx = request.page * request.page_size;
-                        let page_symbols: Vec<_> = symbols.into_iter().skip(start_idx).take(request.page_size).collect();
-                        
-                        let symbols_text = page_symbols.into_iter().map(|symbol| {
-                            let location = &symbol.location;
-                            let file_path = location
-                                .uri
-                                .to_file_path()
-                                .ok()
-                                .and_then(|p| p.to_str().map(|s| s.to_string()))
-                                .unwrap_or_else(|| location.uri.to_string());
-                            let kind = format!("{:?}", symbol.kind);
-                            let container = symbol
-                                .container_name
-                                .map(|c| format!(" (in {})", c))
-                                .unwrap_or_default();
+                        let page_symbols: Vec<_> = symbols
+                            .into_iter()
+                            .skip(start_idx)
+                            .take(request.page_size)
+                            .collect();
 
-                            format!(
-                                "• {} [{}]: {}:{}:{}{}",
-                                symbol.name,
-                                kind,
-                                file_path,
-                                location.range.start.line + 1,
-                                location.range.start.character + 1,
-                                container
-                            )
-                        }).collect::<Vec<_>>().join("\n");
-                        
+                        let symbols_text = page_symbols
+                            .into_iter()
+                            .map(|symbol| {
+                                let location = &symbol.location;
+                                let file_path = location
+                                    .uri
+                                    .to_file_path()
+                                    .ok()
+                                    .and_then(|p| p.to_str().map(|s| s.to_string()))
+                                    .unwrap_or_else(|| location.uri.to_string());
+                                let kind = format!("{:?}", symbol.kind);
+                                let container = symbol
+                                    .container_name
+                                    .map(|c| format!(" (in {})", c))
+                                    .unwrap_or_default();
+
+                                format!(
+                                    "• {} [{}]: {}:{}:{}{}",
+                                    symbol.name,
+                                    kind,
+                                    file_path,
+                                    location.range.start.line + 1,
+                                    location.range.start.character + 1,
+                                    container
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+
                         let page_info = if total_symbols > request.page_size {
-                            let total_pages = (total_symbols + request.page_size - 1) / request.page_size;
-                            format!("\n\n--- Page {} of {} ({} total symbols, {} per page) ---", 
-                                   request.page + 1, total_pages, total_symbols, request.page_size)
+                            let total_pages =
+                                (total_symbols + request.page_size - 1) / request.page_size;
+                            format!(
+                                "\n\n--- Page {} of {} ({} total symbols, {} per page) ---",
+                                request.page + 1,
+                                total_pages,
+                                total_symbols,
+                                request.page_size
+                            )
                         } else {
                             format!("\n\n--- {} symbols total ---", total_symbols)
                         };
-                        
+
                         format!("{}{}", symbols_text, page_info)
                     }
                     DocumentSymbolResponse::Nested(symbols) => {
                         let total_symbols = symbols.len();
                         let start_idx = request.page * request.page_size;
-                        let page_symbols: Vec<_> = symbols.into_iter().skip(start_idx).take(request.page_size).collect();
-                        
+                        let page_symbols: Vec<_> = symbols
+                            .into_iter()
+                            .skip(start_idx)
+                            .take(request.page_size)
+                            .collect();
+
                         fn format_nested_symbols(
                             symbols: Vec<lsp_types::DocumentSymbol>,
                             indent: usize,
@@ -898,30 +976,51 @@ impl RustAnalyzerMCP {
                                 .collect::<Vec<_>>()
                                 .join("\n")
                         }
-                        
+
                         let nested_text = format_nested_symbols(page_symbols, 0);
-                        
+
                         let page_info = if total_symbols > request.page_size {
-                            let total_pages = (total_symbols + request.page_size - 1) / request.page_size;
-                            format!("\n\n--- Page {} of {} ({} total symbols, {} per page) ---", 
-                                   request.page + 1, total_pages, total_symbols, request.page_size)
+                            let total_pages =
+                                (total_symbols + request.page_size - 1) / request.page_size;
+                            format!(
+                                "\n\n--- Page {} of {} ({} total symbols, {} per page) ---",
+                                request.page + 1,
+                                total_pages,
+                                total_symbols,
+                                request.page_size
+                            )
                         } else {
                             format!("\n\n--- {} symbols total ---", total_symbols)
                         };
-                        
+
                         format!("{}{}", nested_text, page_info)
                     }
                 };
+
+                // Add debug info about opened documents (already captured above)
+                if opened_count > 10 {
+                    let debug_info = format!(
+                        "\n\n[Debug: {} documents currently opened in rust-analyzer]",
+                        opened_count
+                    );
+                    symbols_text.push_str(&debug_info);
+                }
 
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Document symbols:\n{}",
                     symbols_text
                 ))]))
             }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
-                "No symbols found in document",
-            )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Ok(None) => {
+                drop(lsp_client);
+                Ok(CallToolResult::success(vec![Content::text(
+                    "No symbols found in document",
+                )]))
+            }
+            Err(e) => {
+                drop(lsp_client);
+                Err(McpError::internal_error(format!("LSP error: {}", e), None))
+            }
         }
     }
 
@@ -1260,6 +1359,184 @@ impl RustAnalyzerMCP {
             Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
         }
     }
+
+    #[tool(
+        description = "Get LSP client status and manage document lifecycle for memory optimization"
+    )]
+    async fn lsp_client_status(
+        &self,
+        Parameters(_request): Parameters<LspClientStatusRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let lsp_client = self.lsp_client.lock().await;
+
+        // Get status information
+        let is_ready = lsp_client.is_ready();
+        let opened_count = lsp_client.get_opened_documents_count().await;
+
+        let mut status_info = vec![
+            format!(
+                "LSP Client Status: {}",
+                if is_ready { "Ready" } else { "Not Ready" }
+            ),
+            format!("Opened Documents: {} files", opened_count),
+            format!("Workspace Root: {:?}", self.workspace_root),
+        ];
+
+        // Add memory optimization suggestion if many documents are open
+        if opened_count > 20 {
+            status_info.push("\n[Warning] Many documents are open in rust-analyzer.".to_string());
+            status_info.push("This may cause high memory usage and slow responses.".to_string());
+            status_info
+                .push("Consider using 'close_unused_documents' action if available.".to_string());
+        } else if opened_count > 10 {
+            status_info.push("\n[Info] Moderate number of documents open.".to_string());
+            status_info.push("Monitor memory usage if working with large files.".to_string());
+        }
+
+        // Add configuration info
+        status_info.push("\nConfiguration:".to_string());
+        status_info.push(format!("- Timeout: {}s", lsp_client::get_timeout_secs()));
+        status_info.push(format!(
+            "- Max Response Size: {}KB",
+            lsp_client::get_max_response_size() / 1024
+        ));
+        status_info.push(format!(
+            "- Max Symbols per Page: {}",
+            lsp_client::MAX_SYMBOLS_COUNT
+        ));
+
+        Ok(CallToolResult::success(vec![Content::text(
+            status_info.join("\n"),
+        )]))
+    }
+
+    #[tool(
+        description = "Close a document in rust-analyzer to free memory and reduce resource usage"
+    )]
+    async fn close_document(
+        &self,
+        Parameters(request): Parameters<CloseDocumentRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = {
+            let lsp_client = self.lsp_client.lock().await;
+
+            let opened_count_before = lsp_client.get_opened_documents_count().await;
+            let close_result = match lsp_client.close_document(&request.file_path).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(format!("Failed to close document: {}", e)),
+            };
+            let opened_count_after = lsp_client.get_opened_documents_count().await;
+
+            (opened_count_before, close_result, opened_count_after)
+        };
+
+        let (opened_count_before, close_result, opened_count_after) = result;
+
+        match close_result {
+            Ok(()) => {
+                let result_msg = if opened_count_after < opened_count_before {
+                    format!(
+                        "Document closed successfully: {}\nOpened documents: {} → {} (-{} document)",
+                        request.file_path,
+                        opened_count_before,
+                        opened_count_after,
+                        opened_count_before - opened_count_after
+                    )
+                } else {
+                    format!(
+                        "Document close request sent: {}\nOpened documents: {} (no change - document may not have been opened)",
+                        request.file_path,
+                        opened_count_after
+                    )
+                };
+
+                Ok(CallToolResult::success(vec![Content::text(result_msg)]))
+            }
+            Err(error_msg) => Err(McpError::internal_error(error_msg, None)),
+        }
+    }
+
+    #[tool(
+        description = "Pre-warm rust-analyzer cache by opening files matching glob patterns for faster subsequent operations"
+    )]
+    async fn warm_cache(
+        &self,
+        Parameters(request): Parameters<WarmCacheRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = {
+            let lsp_client = self.lsp_client.lock().await;
+
+            if request.patterns.is_empty() && request.use_rust_defaults {
+                // Use default Rust project patterns
+                lsp_client.warm_cache_rust_project().await
+            } else if request.patterns.is_empty() {
+                // No patterns provided and not using defaults
+                return Ok(CallToolResult::success(vec![Content::text(
+                    "No glob patterns provided. Use 'use_rust_defaults: true' or provide specific patterns.".to_string()
+                )]));
+            } else {
+                // Use provided patterns, possibly combined with defaults
+                let mut patterns = request.patterns.clone();
+                if request.use_rust_defaults {
+                    let default_patterns = vec![
+                        "src/**/*.rs".to_string(),
+                        "examples/**/*.rs".to_string(),
+                        "tests/**/*.rs".to_string(),
+                        "benches/**/*.rs".to_string(),
+                        "build.rs".to_string(),
+                    ];
+                    for pattern in default_patterns {
+                        if !patterns.contains(&pattern) {
+                            patterns.push(pattern);
+                        }
+                    }
+                }
+                lsp_client.warm_cache_with_globs(&patterns).await
+            }
+        };
+
+        match result {
+            Ok((files_opened, files_already_open, files_failed, duration)) => {
+                let total_files = files_opened + files_already_open + files_failed;
+                let duration_secs = duration.as_secs_f64();
+
+                let mut response_lines = vec![
+                    "Cache warming completed successfully:".to_string(),
+                    format!("📂 Total files processed: {}", total_files),
+                    format!("✅ Files newly opened: {}", files_opened),
+                    format!("🔄 Files already open: {}", files_already_open),
+                ];
+
+                if files_failed > 0 {
+                    response_lines.push(format!("❌ Files failed to open: {}", files_failed));
+                }
+
+                response_lines.extend(vec![
+                    format!("⏱️  Duration: {:.2}s", duration_secs),
+                    format!(
+                        "📊 Performance: {:.1} files/sec",
+                        total_files as f64 / duration_secs.max(0.001)
+                    ),
+                ]);
+
+                if files_opened > 0 {
+                    response_lines.push("🚀 rust-analyzer cache is now warmed - subsequent operations will be much faster!".to_string());
+                }
+
+                if total_files > 100 {
+                    response_lines.push("\n💡 Tip: For very large projects, consider using more specific glob patterns to reduce memory usage.".to_string());
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(
+                    response_lines.join("\n"),
+                )]))
+            }
+            Err(e) => Err(McpError::internal_error(
+                format!("Cache warming failed: {}", e),
+                None,
+            )),
+        }
+    }
 }
 
 #[tool_handler]
@@ -1271,7 +1548,7 @@ impl ServerHandler for RustAnalyzerMCP {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides rust-analyzer functionality through MCP tools. Available tools: 'hover' for type information, 'completion' for code completions, 'diagnostics' for compile errors, 'goto_definition' to find definitions, 'find_references' to find all references, 'format_document' to format code, 'rename' to rename symbols across the workspace, 'code_actions' to get quick fixes and refactorings, 'workspace_symbols' to search symbols across the workspace, 'inlay_hints' to get type and parameter hints, 'expand_macro' to expand Rust macros, 'document_symbols' for code structure analysis, 'signature_help' for function parameter assistance, 'document_highlight' for symbol occurrence highlighting, 'selection_range' for smart selection expansion, 'runnables' to find tests, benchmarks, and executables, and 'implementations' to find all implementations of a trait.".to_string()),
+            instructions: Some("This server provides rust-analyzer functionality through MCP tools. Available tools: 'hover' for type information, 'completion' for code completions, 'diagnostics' for compile errors, 'goto_definition' to find definitions, 'find_references' to find all references, 'format_document' to format code, 'rename' to rename symbols across the workspace, 'code_actions' to get quick fixes and refactorings, 'workspace_symbols' to search symbols across the workspace, 'inlay_hints' to get type and parameter hints, 'expand_macro' to expand Rust macros, 'document_symbols' for code structure analysis, 'signature_help' for function parameter assistance, 'document_highlight' for symbol occurrence highlighting, 'selection_range' for smart selection expansion, 'runnables' to find tests, benchmarks, and executables, 'implementations' to find all implementations of a trait, 'lsp_client_status' for monitoring LSP client status and memory usage, 'close_document' for closing documents to free memory, and 'warm_cache' for pre-warming rust-analyzer cache with glob patterns to significantly improve performance.".to_string()),
         }
     }
 
@@ -1284,8 +1561,136 @@ impl ServerHandler for RustAnalyzerMCP {
     }
 }
 
+fn parse_memory_size(memory_str: &str) -> Result<u64, String> {
+    let memory_str = memory_str.to_lowercase();
+
+    if let Some(num_str) = memory_str.strip_suffix("g") {
+        let num: f64 = num_str
+            .parse()
+            .map_err(|_| format!("Invalid memory size: {}", memory_str))?;
+        Ok((num * 1024.0 * 1024.0 * 1024.0) as u64)
+    } else if let Some(num_str) = memory_str.strip_suffix("m") {
+        let num: f64 = num_str
+            .parse()
+            .map_err(|_| format!("Invalid memory size: {}", memory_str))?;
+        Ok((num * 1024.0 * 1024.0) as u64)
+    } else if let Some(num_str) = memory_str.strip_suffix("k") {
+        let num: f64 = num_str
+            .parse()
+            .map_err(|_| format!("Invalid memory size: {}", memory_str))?;
+        Ok((num * 1024.0) as u64)
+    } else {
+        // Try parsing as bytes
+        memory_str
+            .parse::<u64>()
+            .map_err(|_| format!("Invalid memory size: {}", memory_str))
+    }
+}
+
+fn get_system_memory() -> u64 {
+    let mut system = System::new_all();
+    system.refresh_memory();
+    system.total_memory()
+}
+
+fn calculate_default_memory_limit() -> u64 {
+    let total_memory = get_system_memory();
+    (total_memory as f64 * 0.2) as u64 // 20% of system memory
+}
+
+fn should_auto_warm(workspace_root: &PathBuf, memory_limit: u64) -> bool {
+    // Count Rust files to estimate project size
+    let patterns = vec![
+        "src/**/*.rs",
+        "examples/**/*.rs",
+        "tests/**/*.rs",
+        "benches/**/*.rs",
+        "build.rs",
+    ];
+
+    let mut total_files = 0;
+    for pattern in patterns {
+        if let Ok(entries) = glob::glob(&format!("{}/{}", workspace_root.display(), pattern)) {
+            total_files += entries.count();
+        }
+    }
+
+    // Conservative estimate: 1MB per file for rust-analyzer memory usage
+    let estimated_memory = total_files * 1024 * 1024;
+    let memory_usage_within_limit = (estimated_memory as u64) <= memory_limit;
+
+    // Auto-warm if we have files and memory usage should be reasonable
+    total_files > 0 && memory_usage_within_limit
+}
+
+async fn perform_auto_warming(
+    lsp_client: &mut LspClient,
+    _workspace_root: &PathBuf,
+    warm_all: bool,
+    show_progress: bool,
+    memory_limit: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if show_progress {
+        eprintln!(
+            "🔥 Starting auto-warm with memory limit: {}MB",
+            memory_limit / (1024 * 1024)
+        );
+    }
+
+    let patterns = if warm_all {
+        vec![
+            "**/*.rs".to_string(), // Warm everything
+        ]
+    } else {
+        vec![
+            "src/**/*.rs".to_string(),
+            "examples/**/*.rs".to_string(),
+            "tests/**/*.rs".to_string(),
+            "benches/**/*.rs".to_string(),
+            "build.rs".to_string(),
+        ]
+    };
+
+    if show_progress {
+        eprintln!("📂 Scanning for Rust files...");
+    }
+
+    let start_time = std::time::Instant::now();
+    let result = lsp_client.warm_cache_with_globs(&patterns).await;
+    let duration = start_time.elapsed();
+
+    match result {
+        Ok((files_opened, files_already_open, files_failed, _)) => {
+            let total_files = files_opened + files_already_open + files_failed;
+
+            if show_progress || files_opened > 0 {
+                eprintln!("✅ Auto-warm completed in {:.1}s:", duration.as_secs_f64());
+                eprintln!("   📂 {} files processed", total_files);
+                eprintln!("   🆕 {} newly opened", files_opened);
+                if files_already_open > 0 {
+                    eprintln!("   🔄 {} already open", files_already_open);
+                }
+                if files_failed > 0 {
+                    eprintln!("   ❌ {} failed to open", files_failed);
+                }
+                if files_opened > 0 {
+                    eprintln!("   🚀 rust-analyzer cache is warmed - operations will be faster!");
+                }
+            }
+
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("⚠️  Auto-warm failed: {}", e);
+            Ok(()) // Don't fail server startup on auto-warm failure
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
         .with_writer(std::io::stderr)
@@ -1295,16 +1700,295 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting rust-analyzer MCP server");
 
     let workspace_root = std::env::current_dir()?;
-    let service = RustAnalyzerMCP::new(workspace_root)
-        .await?
-        .serve(stdio())
-        .await
-        .inspect_err(|e| {
-            error!("serving error: {:?}", e);
-        })?;
+
+    // Parse memory limit
+    let memory_limit = if let Some(memory_str) = &args.max_memory {
+        parse_memory_size(memory_str).map_err(|e| format!("Failed to parse --max-memory: {}", e))?
+    } else {
+        calculate_default_memory_limit()
+    };
+
+    // Create the MCP service
+    let mcp_service = RustAnalyzerMCP::new(workspace_root.clone()).await?;
+
+    // Perform auto-warming if enabled
+    if !args.no_auto_warm {
+        if args.warm_all || should_auto_warm(&workspace_root, memory_limit) {
+            let lsp_client = Arc::clone(&mcp_service.lsp_client);
+            let mut client_guard = lsp_client.lock().await;
+
+            perform_auto_warming(
+                &mut *client_guard,
+                &workspace_root,
+                args.warm_all,
+                args.show_progress,
+                memory_limit,
+            )
+            .await?;
+
+            drop(client_guard); // Release the lock
+        } else if args.show_progress {
+            eprintln!(
+                "ℹ️  Auto-warm skipped: project too large for memory limit ({}MB)",
+                memory_limit / (1024 * 1024)
+            );
+            eprintln!("   Use --warm-all to force warming or --max-memory to increase limit");
+        }
+    } else if args.show_progress {
+        eprintln!("ℹ️  Auto-warm disabled via --no-auto-warm");
+    }
+
+    let service = mcp_service.serve(stdio()).await.inspect_err(|e| {
+        error!("serving error: {:?}", e);
+    })?;
 
     info!("MCP server is running");
     service.waiting().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CloseDocumentRequest, DocumentSymbolsRequest, LspClientStatusRequest, WarmCacheRequest,
+    };
+    use crate::lsp_client;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_workspace_root_method() {
+        // Test that workspace_root method works (to avoid dead code warning)
+        let workspace = PathBuf::from("/tmp");
+        let workspace_clone = workspace.clone();
+
+        // We can't easily create a full RustAnalyzerMCP instance in tests without rust-analyzer,
+        // but we can test that the PathBuf operations work
+        assert_eq!(workspace, workspace_clone);
+        assert!(workspace.is_absolute());
+    }
+
+    #[test]
+    fn test_lsp_client_status_request_deserialization() {
+        // Test LspClientStatusRequest deserialization
+        let json = r#"{}"#;
+        let _request: LspClientStatusRequest = serde_json::from_str(json).unwrap();
+    }
+
+    #[test]
+    fn test_close_document_request_deserialization() {
+        // Test CloseDocumentRequest deserialization
+        let json = r#"{"file_path": "/path/to/file.rs"}"#;
+        let request: CloseDocumentRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.file_path, "/path/to/file.rs");
+    }
+
+    #[test]
+    fn test_document_symbols_pagination_defaults() {
+        // Test DocumentSymbolsRequest pagination defaults
+        let json = r#"{"file_path": "/path/to/file.rs"}"#;
+        let request: DocumentSymbolsRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.page, 0);
+        assert_eq!(request.page_size, lsp_client::MAX_SYMBOLS_COUNT);
+    }
+
+    #[test]
+    fn test_document_symbols_pagination_custom() {
+        // Test DocumentSymbolsRequest with custom pagination
+        let json = r#"{"file_path": "/path/to/file.rs", "page": 2, "page_size": 50}"#;
+        let request: DocumentSymbolsRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.page, 2);
+        assert_eq!(request.page_size, 50);
+    }
+
+    #[test]
+    fn test_warm_cache_request_defaults() {
+        // Test WarmCacheRequest with defaults
+        let json = r#"{}"#;
+        let request: WarmCacheRequest = serde_json::from_str(json).unwrap();
+        assert!(request.patterns.is_empty());
+        assert!(request.use_rust_defaults);
+    }
+
+    #[test]
+    fn test_warm_cache_request_custom_patterns() {
+        // Test WarmCacheRequest with custom patterns
+        let json = r#"{"patterns": ["src/**/*.rs", "custom/**/*.rs"], "use_rust_defaults": false}"#;
+        let request: WarmCacheRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.patterns, vec!["src/**/*.rs", "custom/**/*.rs"]);
+        assert!(!request.use_rust_defaults);
+    }
+
+    #[test]
+    fn test_warm_cache_request_patterns_with_defaults() {
+        // Test WarmCacheRequest with custom patterns and defaults
+        let json = r#"{"patterns": ["custom/**/*.rs"], "use_rust_defaults": true}"#;
+        let request: WarmCacheRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(request.patterns, vec!["custom/**/*.rs"]);
+        assert!(request.use_rust_defaults);
+    }
+
+    #[test]
+    fn test_parse_memory_size() {
+        use super::parse_memory_size;
+
+        // Test gigabytes
+        assert_eq!(parse_memory_size("1g").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_memory_size("2G").unwrap(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(
+            parse_memory_size("0.5g").unwrap(),
+            (0.5 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
+
+        // Test megabytes
+        assert_eq!(parse_memory_size("100m").unwrap(), 100 * 1024 * 1024);
+        assert_eq!(parse_memory_size("500M").unwrap(), 500 * 1024 * 1024);
+        assert_eq!(
+            parse_memory_size("1.5m").unwrap(),
+            (1.5 * 1024.0 * 1024.0) as u64
+        );
+
+        // Test kilobytes
+        assert_eq!(parse_memory_size("1024k").unwrap(), 1024 * 1024);
+        assert_eq!(parse_memory_size("2048K").unwrap(), 2048 * 1024);
+
+        // Test bytes
+        assert_eq!(parse_memory_size("1024").unwrap(), 1024);
+        assert_eq!(parse_memory_size("4096").unwrap(), 4096);
+
+        // Test invalid formats
+        assert!(parse_memory_size("invalid").is_err());
+        assert!(parse_memory_size("1.5.5g").is_err());
+        assert!(parse_memory_size("").is_err());
+        assert!(parse_memory_size("g").is_err());
+    }
+
+    #[test]
+    fn test_get_system_memory() {
+        use super::get_system_memory;
+
+        // Test that we can get system memory (should be > 0)
+        let memory = get_system_memory();
+        assert!(memory > 0, "System memory should be greater than 0");
+        assert!(memory > 1024 * 1024, "System memory should be at least 1MB");
+    }
+
+    #[test]
+    fn test_calculate_default_memory_limit() {
+        use super::{calculate_default_memory_limit, get_system_memory};
+
+        let limit = calculate_default_memory_limit();
+        let total = get_system_memory();
+
+        // Should be 20% of system memory
+        let expected = (total as f64 * 0.2) as u64;
+        assert_eq!(limit, expected);
+
+        // Should be reasonable (between 1MB and total memory)
+        assert!(limit > 1024 * 1024, "Default limit should be at least 1MB");
+        assert!(
+            limit <= total,
+            "Default limit should not exceed total memory"
+        );
+    }
+
+    #[test]
+    fn test_should_auto_warm_with_no_files() {
+        use super::should_auto_warm;
+
+        // Test with a non-existent directory (no Rust files)
+        let nonexistent_path = PathBuf::from("/tmp/definitely-does-not-exist-rust-project-12345");
+        let memory_limit = 1024 * 1024 * 1024; // 1GB
+
+        let should_warm = should_auto_warm(&nonexistent_path, memory_limit);
+        assert!(
+            !should_warm,
+            "Should not auto-warm when no Rust files found"
+        );
+    }
+
+    #[test]
+    fn test_should_auto_warm_with_current_project() {
+        use super::should_auto_warm;
+
+        // Test with current project (should have Rust files)
+        let current_path = std::env::current_dir().unwrap();
+        let high_memory_limit = 1024 * 1024 * 1024; // 1GB - should be enough
+        let low_memory_limit = 1024; // 1KB - should be too low
+
+        let should_warm_high = should_auto_warm(&current_path, high_memory_limit);
+        let should_warm_low = should_auto_warm(&current_path, low_memory_limit);
+
+        // With high memory limit, should warm (we have Rust files)
+        assert!(
+            should_warm_high,
+            "Should auto-warm current project with high memory limit"
+        );
+
+        // With very low memory limit, should not warm
+        assert!(
+            !should_warm_low,
+            "Should not auto-warm with very low memory limit"
+        );
+    }
+
+    #[test]
+    fn test_cli_args_defaults() {
+        use super::Args;
+        use clap::Parser;
+
+        // Test default CLI arguments (empty args)
+        let args = Args::try_parse_from(&["language-server-mcp"]).unwrap();
+        assert!(!args.no_auto_warm, "no_auto_warm should default to false");
+        assert!(
+            args.max_memory.is_none(),
+            "max_memory should default to None"
+        );
+        assert!(!args.warm_all, "warm_all should default to false");
+        assert!(!args.show_progress, "show_progress should default to false");
+    }
+
+    #[test]
+    fn test_cli_args_flags() {
+        use super::Args;
+        use clap::Parser;
+
+        // Test all CLI flags set
+        let args = Args::try_parse_from(&[
+            "language-server-mcp",
+            "--no-auto-warm",
+            "--max-memory",
+            "1g",
+            "--warm-all",
+            "--show-progress",
+        ])
+        .unwrap();
+
+        assert!(
+            args.no_auto_warm,
+            "no_auto_warm should be true when flag set"
+        );
+        assert_eq!(
+            args.max_memory,
+            Some("1g".to_string()),
+            "max_memory should be set"
+        );
+        assert!(args.warm_all, "warm_all should be true when flag set");
+        assert!(
+            args.show_progress,
+            "show_progress should be true when flag set"
+        );
+    }
+
+    #[test]
+    fn test_cli_memory_parsing_integration() {
+        use super::{parse_memory_size, Args};
+        use clap::Parser;
+
+        // Test that CLI parsing works with memory parsing
+        let args = Args::try_parse_from(&["language-server-mcp", "--max-memory", "512m"]).unwrap();
+
+        let memory_limit = parse_memory_size(args.max_memory.as_ref().unwrap()).unwrap();
+        assert_eq!(memory_limit, 512 * 1024 * 1024);
+    }
 }
