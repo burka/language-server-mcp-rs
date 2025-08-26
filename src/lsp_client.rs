@@ -56,6 +56,7 @@ impl LspClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_ready(&self) -> bool {
         self.is_ready.load(Ordering::Relaxed)
     }
@@ -122,12 +123,16 @@ impl LspClient {
         {
             let mut opened_docs = self.opened_documents.lock().await;
             opened_docs.insert(file_path.to_string());
-            debug!("Document opened and cached. Total opened documents: {}", opened_docs.len());
+            debug!(
+                "Document opened and cached. Total opened documents: {}",
+                opened_docs.len()
+            );
         }
 
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn close_document(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
         // Check if document is opened
         {
@@ -152,12 +157,16 @@ impl LspClient {
         {
             let mut opened_docs = self.opened_documents.lock().await;
             opened_docs.remove(file_path);
-            debug!("Document closed. Total opened documents: {}", opened_docs.len());
+            debug!(
+                "Document closed. Total opened documents: {}",
+                opened_docs.len()
+            );
         }
 
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn get_opened_documents_count(&self) -> usize {
         let opened_docs = self.opened_documents.lock().await;
         opened_docs.len()

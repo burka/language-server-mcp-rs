@@ -7,10 +7,6 @@ edition = "2021"
 name = "language-server-mcp"
 path = "src/main.rs"
 
-[[bin]]
-name = "client-example"
-path = "examples/client.rs"
-
 
 [dependencies]
 rmcp = { version = "0.6.0", features = ["server", "client", "transport-io", "transport-child-process"] }

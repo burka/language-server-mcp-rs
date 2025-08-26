@@ -34,8 +34,10 @@ impl Greetable for User {
     }
 
     fn introduce(&self) -> String {
-        format!("Hi! I'm {} and I'm {} years old. You can reach me at {}", 
-                self.name, self.age, self.email)
+        format!(
+            "Hi! I'm {} and I'm {} years old. You can reach me at {}",
+            self.name, self.age, self.email
+        )
     }
 }
 
@@ -117,8 +119,6 @@ mod benchmarks {
 
     #[bench]
     fn bench_user_creation(b: &mut test::Bencher) {
-        b.iter(|| {
-            User::new("Test".to_string(), 25, "test@example.com".to_string())
-        });
+        b.iter(|| User::new("Test".to_string(), 25, "test@example.com".to_string()));
     }
 }

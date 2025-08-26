@@ -139,6 +139,7 @@ pub struct PositionInfo {
 #[derive(Clone)]
 pub struct RustAnalyzerMCP {
     lsp_client: Arc<Mutex<LspClient>>,
+    #[allow(dead_code)]
     workspace_root: PathBuf,
     tool_router: ToolRouter<RustAnalyzerMCP>,
 }
@@ -146,7 +147,10 @@ pub struct RustAnalyzerMCP {
 #[tool_router]
 impl RustAnalyzerMCP {
     pub async fn new(workspace_root: PathBuf) -> Result<Self, Box<dyn std::error::Error>> {
-        info!("Initializing rust-analyzer MCP server for workspace: {:?}", workspace_root);
+        info!(
+            "Initializing rust-analyzer MCP server for workspace: {:?}",
+            workspace_root
+        );
         let lsp_client = LspClient::new(&workspace_root).await?;
         info!("rust-analyzer LSP client initialized and ready");
         Ok(Self {
@@ -804,38 +808,39 @@ impl RustAnalyzerMCP {
             Ok(Some(response)) => {
                 use lsp_types::DocumentSymbolResponse;
                 let symbols_text = match response {
-                    DocumentSymbolResponse::Flat(symbols) => {
-                        symbols
-                            .into_iter()
-                            .map(|symbol| {
-                                let location = &symbol.location;
-                                let file_path = location
-                                    .uri
-                                    .to_file_path()
-                                    .ok()
-                                    .and_then(|p| p.to_str().map(|s| s.to_string()))
-                                    .unwrap_or_else(|| location.uri.to_string());
-                                let kind = format!("{:?}", symbol.kind);
-                                let container = symbol
-                                    .container_name
-                                    .map(|c| format!(" (in {})", c))
-                                    .unwrap_or_default();
+                    DocumentSymbolResponse::Flat(symbols) => symbols
+                        .into_iter()
+                        .map(|symbol| {
+                            let location = &symbol.location;
+                            let file_path = location
+                                .uri
+                                .to_file_path()
+                                .ok()
+                                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                                .unwrap_or_else(|| location.uri.to_string());
+                            let kind = format!("{:?}", symbol.kind);
+                            let container = symbol
+                                .container_name
+                                .map(|c| format!(" (in {})", c))
+                                .unwrap_or_default();
 
-                                format!(
-                                    "• {} [{}]: {}:{}:{}{}",
-                                    symbol.name,
-                                    kind,
-                                    file_path,
-                                    location.range.start.line + 1,
-                                    location.range.start.character + 1,
-                                    container
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    }
+                            format!(
+                                "• {} [{}]: {}:{}:{}{}",
+                                symbol.name,
+                                kind,
+                                file_path,
+                                location.range.start.line + 1,
+                                location.range.start.character + 1,
+                                container
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     DocumentSymbolResponse::Nested(symbols) => {
-                        fn format_nested_symbols(symbols: Vec<lsp_types::DocumentSymbol>, indent: usize) -> String {
+                        fn format_nested_symbols(
+                            symbols: Vec<lsp_types::DocumentSymbol>,
+                            indent: usize,
+                        ) -> String {
                             symbols
                                 .into_iter()
                                 .map(|symbol| {
@@ -850,11 +855,14 @@ impl RustAnalyzerMCP {
                                         range.start.line + 1,
                                         range.start.character + 1
                                     );
-                                    
+
                                     if let Some(children) = symbol.children {
                                         if !children.is_empty() {
                                             result.push('\n');
-                                            result.push_str(&format_nested_symbols(children, indent + 1));
+                                            result.push_str(&format_nested_symbols(
+                                                children,
+                                                indent + 1,
+                                            ));
                                         }
                                     }
                                     result
@@ -902,7 +910,7 @@ impl RustAnalyzerMCP {
                         .map(|(i, sig)| {
                             let active_param = help.active_parameter.unwrap_or(0) as usize;
                             let mut signature = format!("{}. {}", i + 1, sig.label);
-                            
+
                             if let Some(doc) = sig.documentation.as_ref() {
                                 let doc_text = match doc {
                                     lsp_types::Documentation::String(s) => s.clone(),
@@ -927,7 +935,9 @@ impl RustAnalyzerMCP {
                                     if let Some(doc) = &param.documentation {
                                         let doc_text = match doc {
                                             lsp_types::Documentation::String(s) => s.clone(),
-                                            lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
+                                            lsp_types::Documentation::MarkupContent(mc) => {
+                                                mc.value.clone()
+                                            }
                                         };
                                         if !doc_text.is_empty() {
                                             signature.push_str(&format!(" - {}", doc_text));
@@ -1045,7 +1055,7 @@ impl RustAnalyzerMCP {
                                     range.range.end.line + 1,
                                     range.range.end.character + 1
                                 ));
-                                
+
                                 if let Some(parent) = range.parent {
                                     range = *parent;
                                     level += 1;
@@ -1071,7 +1081,9 @@ impl RustAnalyzerMCP {
         }
     }
 
-    #[tool(description = "Find runnable items (tests, benchmarks, executables) with cargo commands")]
+    #[tool(
+        description = "Find runnable items (tests, benchmarks, executables) with cargo commands"
+    )]
     async fn runnables(
         &self,
         Parameters(request): Parameters<RunnablesRequest>,
@@ -1124,7 +1136,12 @@ impl RustAnalyzerMCP {
 
                                 Some(format!(
                                     "{}. {} [{}] at line {}:{}{}",
-                                    i + 1, label, kind, line, character, cargo_cmd
+                                    i + 1,
+                                    label,
+                                    kind,
+                                    line,
+                                    character,
+                                    cargo_cmd
                                 ))
                             })
                             .collect::<Vec<_>>()
