@@ -67,7 +67,7 @@ fn main() {
     println!("{}", user.greet());
 
     // Test completion: type 'user.' to see available methods
-    let message = user.greet();
+    let _message = user.greet();
 
     // Test diagnostics: uncomment this line to see an error
     // let x: i32 = "not a number";
@@ -113,12 +113,4 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod benchmarks {
-    use super::*;
-
-    #[bench]
-    fn bench_user_creation(b: &mut test::Bencher) {
-        b.iter(|| User::new("Test".to_string(), 25, "test@example.com".to_string()));
-    }
-}
+// Note: Benchmarks removed - use `cargo bench` with nightly Rust for benchmarking
