@@ -1395,7 +1395,7 @@ impl RustAnalyzerMCP {
         // Get status information
         let is_ready = lsp_client.is_ready();
         let opened_count = lsp_client.get_opened_documents_count().await;
-        let (memory_mb, _doc_count, memory_threshold_mb) = lsp_client.get_memory_status().await;
+        let (memory_mb, _doc_count) = lsp_client.get_memory_status().await;
 
         let mut status_info = vec![
             format!(
@@ -1408,29 +1408,7 @@ impl RustAnalyzerMCP {
 
         // Add memory usage information
         if let Some(memory) = memory_mb {
-            let memory_percentage = (memory as f64 / memory_threshold_mb as f64) * 100.0;
-            let memory_emoji = if memory_percentage > 90.0 {
-                "🔴"
-            } else if memory_percentage > 70.0 {
-                "🟠"
-            } else {
-                "🟢"
-            };
-
-            status_info.push(format!(
-                "Memory Usage: {memory_emoji} {memory}MB / {memory_threshold_mb}MB ({memory_percentage:.1}%)"
-            ));
-
-            if memory > memory_threshold_mb {
-                status_info.push(
-                    "  [Warning] Memory threshold exceeded - automatic cleanup will occur"
-                        .to_string(),
-                );
-            } else if memory_percentage > 80.0 {
-                status_info.push(
-                    "  [Info] High memory usage - consider closing unused documents".to_string(),
-                );
-            }
+            status_info.push(format!("Memory Usage: {memory}MB"));
         } else {
             status_info.push(
                 "Memory Usage: Unable to monitor (rust-analyzer process not found)".to_string(),

@@ -1,7 +1,7 @@
 use lsp_types::{request::GotoImplementationParams, *};
 use serde_json::{json, Value};
 
-use indexmap::IndexMap;
+use std::collections::HashSet;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -21,10 +21,6 @@ pub const MAX_LARGE_RESPONSE_SIZE_BYTES: usize = 120 * 1024; // 120KB ≈ 30k to
 pub const MAX_SYMBOLS_COUNT: usize = 200; // Reasonable symbol limit with paging
 pub const MAX_COMPLETION_ITEMS: usize = 25; // Reasonable completion limit
 
-// Memory management constants
-const DEFAULT_MEMORY_THRESHOLD_MB: u64 = 500; // 500MB memory threshold
-const MAX_OPEN_DOCUMENTS: usize = 100; // Maximum documents to keep open
-
 pub struct LspClient {
     process: Child,
     stdin: Mutex<tokio::process::ChildStdin>,
@@ -32,13 +28,11 @@ pub struct LspClient {
     request_id: Mutex<i64>,
     workspace_root: PathBuf,
     is_ready: Arc<AtomicBool>,
-    // LRU tracking for opened documents with access order
-    opened_documents: Mutex<IndexMap<String, Instant>>,
+    opened_documents: Mutex<HashSet<String>>,
     timeout_secs: u64,
     // Memory monitoring
     process_pid: Option<u32>,
     system: Mutex<System>,
-    memory_threshold_mb: u64,
 }
 
 pub fn get_timeout_secs() -> u64 {
@@ -87,11 +81,6 @@ impl LspClient {
         // Get process PID for memory monitoring
         let process_pid = process.id();
 
-        let memory_threshold_mb = env::var("RUST_ANALYZER_MCP_MEMORY_THRESHOLD_MB")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(DEFAULT_MEMORY_THRESHOLD_MB);
-
         let mut client = Self {
             process,
             stdin: Mutex::new(stdin),
@@ -99,11 +88,10 @@ impl LspClient {
             request_id: Mutex::new(0),
             workspace_root: workspace_root.to_path_buf(),
             is_ready: Arc::new(AtomicBool::new(false)),
-            opened_documents: Mutex::new(IndexMap::new()),
+            opened_documents: Mutex::new(HashSet::new()),
             timeout_secs: get_timeout_secs(),
             process_pid,
             system: Mutex::new(System::new()),
-            memory_threshold_mb,
         };
 
         // Initialize synchronously for now - we'll add async initialization later
@@ -184,20 +172,14 @@ impl LspClient {
     }
 
     pub async fn open_document(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Check if document is already opened and update LRU
+        // Check if document is already opened
         {
-            let mut opened_docs = self.opened_documents.lock().await;
-            if opened_docs.contains_key(file_path) {
-                // Update access time (move to end for LRU)
-                opened_docs.shift_remove(file_path);
-                opened_docs.insert(file_path.to_string(), Instant::now());
+            let opened_docs = self.opened_documents.lock().await;
+            if opened_docs.contains(file_path) {
                 debug!("Document already opened, using cache: {}", file_path);
                 return Ok(());
             }
         }
-
-        // Check if we need to cleanup before opening new document
-        self.cleanup_if_needed().await?;
 
         // Document not opened yet, open it
         debug!("Opening new document: {}", file_path);
@@ -213,10 +195,10 @@ impl LspClient {
 
         self.notify("textDocument/didOpen", params).await?;
 
-        // Mark document as opened with LRU timestamp
+        // Mark document as opened
         {
             let mut opened_docs = self.opened_documents.lock().await;
-            opened_docs.insert(file_path.to_string(), Instant::now());
+            opened_docs.insert(file_path.to_string());
             debug!(
                 "Document opened and cached. Total opened documents: {}",
                 opened_docs.len()
@@ -230,7 +212,7 @@ impl LspClient {
         // Check if document is opened
         {
             let opened_docs = self.opened_documents.lock().await;
-            if !opened_docs.contains_key(file_path) {
+            if !opened_docs.contains(file_path) {
                 debug!("Document not opened, no need to close: {}", file_path);
                 return Ok(()); // Already closed or never opened
             }
@@ -249,7 +231,7 @@ impl LspClient {
         // Remove from opened documents tracking
         {
             let mut opened_docs = self.opened_documents.lock().await;
-            opened_docs.shift_remove(file_path);
+            opened_docs.remove(file_path);
             debug!(
                 "Document closed. Total opened documents: {}",
                 opened_docs.len()
@@ -327,7 +309,7 @@ impl LspClient {
             // Check if already open
             {
                 let opened_docs = self.opened_documents.lock().await;
-                if opened_docs.contains_key(file_path) {
+                if opened_docs.contains(file_path) {
                     files_already_open += 1;
                     continue;
                 }
@@ -945,71 +927,11 @@ impl LspClient {
         None
     }
 
-    /// Check if memory usage exceeds threshold and cleanup if needed
-    pub async fn cleanup_if_needed(&self) -> Result<(), Box<dyn std::error::Error>> {
-        if let Some(memory_mb) = self.get_memory_usage_mb().await {
-            if memory_mb > self.memory_threshold_mb {
-                warn!(
-                    "Memory usage ({} MB) exceeds threshold ({} MB), cleaning up oldest documents",
-                    memory_mb, self.memory_threshold_mb
-                );
-                self.cleanup_oldest_documents().await?;
-            }
-        }
-
-        // Also check document count limit
-        let doc_count = self.get_opened_documents_count().await;
-        if doc_count >= MAX_OPEN_DOCUMENTS {
-            warn!(
-                "Document count ({}) exceeds limit ({}), cleaning up oldest documents",
-                doc_count, MAX_OPEN_DOCUMENTS
-            );
-            self.cleanup_oldest_documents().await?;
-        }
-
-        Ok(())
-    }
-
-    /// Close the oldest opened documents (LRU cleanup)
-    async fn cleanup_oldest_documents(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let documents_to_close = {
-            let mut opened_docs = self.opened_documents.lock().await;
-            let mut to_close = Vec::new();
-
-            // Close oldest 25% of documents or at least 5 documents
-            let cleanup_count = std::cmp::max(5, opened_docs.len() / 4);
-
-            // IndexMap maintains insertion order, so first entries are oldest
-            let keys: Vec<String> = opened_docs.keys().take(cleanup_count).cloned().collect();
-            for key in &keys {
-                opened_docs.shift_remove(key);
-                to_close.push(key.clone());
-            }
-
-            info!(
-                "Cleaning up {} oldest documents, {} documents remain open",
-                to_close.len(),
-                opened_docs.len()
-            );
-
-            to_close
-        };
-
-        // Close documents outside of the lock to avoid deadlock
-        for file_path in documents_to_close {
-            if let Err(e) = self.close_document(&file_path).await {
-                warn!("Failed to close document {}: {}", file_path, e);
-            }
-        }
-
-        Ok(())
-    }
-
     /// Get memory and document status for monitoring
-    pub async fn get_memory_status(&self) -> (Option<u64>, usize, u64) {
+    pub async fn get_memory_status(&self) -> (Option<u64>, usize) {
         let memory_mb = self.get_memory_usage_mb().await;
         let doc_count = self.get_opened_documents_count().await;
-        (memory_mb, doc_count, self.memory_threshold_mb)
+        (memory_mb, doc_count)
     }
 }
 

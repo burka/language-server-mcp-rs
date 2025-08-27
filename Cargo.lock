@@ -641,7 +641,6 @@ dependencies = [
  "clap",
  "futures",
  "glob",
- "indexmap",
  "lsp-types",
  "rmcp",
  "schemars 0.8.22",
