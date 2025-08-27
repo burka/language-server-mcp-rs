@@ -12,11 +12,17 @@ use sysinfo::{Pid, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant};
 use tracing::{debug, info, warn};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_RESPONSE_SIZE_BYTES: usize = 40 * 1024; // 40KB ≈ 10k tokens (LLM-friendly)
+
+// Operation-specific timeout defaults (in seconds)
+const QUICK_OPERATION_TIMEOUT: u64 = 10;  // hover, diagnostics, status
+const MEDIUM_OPERATION_TIMEOUT: u64 = 20; // goto_definition, find_references, completion
+const COMPLEX_OPERATION_TIMEOUT: u64 = 45; // code_actions, refactoring, rename
+const SLOW_OPERATION_TIMEOUT: u64 = 90;   // format_document, workspace operations
 pub const MAX_LARGE_RESPONSE_SIZE_BYTES: usize = 120 * 1024; // 120KB ≈ 30k tokens (for diagnostics)
 pub const MAX_SYMBOLS_COUNT: usize = 200; // Reasonable symbol limit with paging
 pub const MAX_COMPLETION_ITEMS: usize = 25; // Reasonable completion limit
@@ -316,6 +322,16 @@ impl LspClient {
         line: u32,
         column: u32,
     ) -> Result<Option<GotoDefinitionResponse>, Box<dyn std::error::Error>> {
+        self.goto_definition_with_timeout(file_path, line, column, None).await
+    }
+
+    pub async fn goto_definition_with_timeout(
+        &self,
+        file_path: &str,
+        line: u32,
+        column: u32,
+        timeout_secs: Option<u64>,
+    ) -> Result<Option<GotoDefinitionResponse>, Box<dyn std::error::Error>> {
         self.wait_for_ready().await;
         // Ensure document is open
         self.open_document(file_path).await?;
@@ -333,7 +349,10 @@ impl LspClient {
             partial_result_params: PartialResultParams::default(),
         };
 
-        self.request("textDocument/definition", params).await
+        let timeout_duration = Duration::from_secs(
+            timeout_secs.unwrap_or(MEDIUM_OPERATION_TIMEOUT)
+        );
+        self.request_with_timeout("textDocument/definition", params, timeout_duration).await
     }
 
     pub async fn find_references(
@@ -673,9 +692,12 @@ impl LspClient {
         params: P,
         timeout_duration: Duration,
     ) -> Result<R, Box<dyn std::error::Error>> {
+        debug!("Starting LSP request: method={}, timeout={:?}", method, timeout_duration);
+        
         let mut id = self.request_id.lock().await;
         *id += 1;
         let request_id = *id;
+        debug!("Generated request ID: {}", request_id);
 
         let request = json!({
             "jsonrpc": "2.0",
@@ -684,14 +706,19 @@ impl LspClient {
             "params": params
         });
 
+        debug!("Sending LSP request: {}", serde_json::to_string(&request)?);
         self.send_message(&request).await?;
+        debug!("LSP request sent, waiting for response...");
 
         let response = match timeout(timeout_duration, self.read_response(request_id)).await {
-            Ok(response) => response?,
+            Ok(response) => {
+                debug!("LSP request '{}' completed successfully", method);
+                response?
+            },
             Err(_) => {
-                warn!("LSP request '{method}' timed out after {timeout_duration:?}");
+                warn!("LSP request '{}' timed out after {:?}", method, timeout_duration);
                 return Err(
-                    format!("LSP request '{method}' timed out after {timeout_duration:?}").into(),
+                    format!("LSP request '{}' timed out after {:?}", method, timeout_duration).into(),
                 );
             }
         };
@@ -752,30 +779,66 @@ impl LspClient {
     }
 
     async fn read_response(&self, expected_id: i64) -> Result<Value, Box<dyn std::error::Error>> {
+        debug!("read_response: Looking for response with ID {}", expected_id);
         let mut stdout = self.stdout.lock().await;
+        let start_time = Instant::now();
+        let overall_timeout = Duration::from_secs(self.timeout_secs);
 
         loop {
+            // Check if we've exceeded the overall timeout
+            if start_time.elapsed() > overall_timeout {
+                debug!("read_response: Overall timeout exceeded after {:?}", overall_timeout);
+                return Err(format!("LSP read_response timed out after {:?}", overall_timeout).into());
+            }
+
             let mut header = String::new();
-            stdout.read_line(&mut header).await?;
+            
+            // Add short timeout to individual read operations to prevent hanging
+            match timeout(Duration::from_millis(100), stdout.read_line(&mut header)).await {
+                Ok(Ok(bytes_read)) => {
+                    if bytes_read == 0 {
+                        debug!("read_response: EOF reached, rust-analyzer process terminated");
+                        return Err("rust-analyzer process terminated or closed stdout".into());
+                    }
+                    debug!("read_response: Read header line: {:?}", header.trim());
+                }, // Successfully read a line
+                Ok(Err(e)) => {
+                    debug!("read_response: IO error reading header: {:?}", e);
+                    return Err(e.into());
+                }, // IO error
+                Err(_) => {
+                    // Individual read timed out, continue loop to check overall timeout
+                    debug!("read_response: Individual read timeout, continuing loop (elapsed: {:?})", start_time.elapsed());
+                    continue;
+                }
+            };
 
             if header.starts_with("Content-Length:") {
                 let length: usize = header
                     .trim_start_matches("Content-Length:")
                     .trim()
                     .parse()?;
+                debug!("read_response: Expecting {} bytes of content", length);
 
                 stdout.read_line(&mut header).await?;
+                debug!("read_response: Read empty header line");
 
                 let mut content = vec![0; length];
                 stdout.read_exact(&mut content).await?;
+                debug!("read_response: Read {} bytes of content", content.len());
 
                 let response: Value = serde_json::from_slice(&content)?;
                 debug!("Received LSP response: {}", response);
 
                 if let Some(id) = response.get("id") {
                     if id.as_i64() == Some(expected_id) {
+                        debug!("read_response: Found matching response for ID {}", expected_id);
                         return Ok(response);
+                    } else {
+                        debug!("read_response: Response ID {:?} doesn't match expected {}, continuing...", id, expected_id);
                     }
+                } else {
+                    debug!("read_response: Response has no ID (probably a notification), continuing...");
                 }
             }
         }

@@ -16,6 +16,7 @@ use tracing::info;
 use tracing_subscriber::{self, EnvFilter};
 
 mod lsp_client;
+mod test_trait;
 use lsp_client::{LspClient, MAX_COMPLETION_ITEMS, MAX_SYMBOLS_COUNT};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
