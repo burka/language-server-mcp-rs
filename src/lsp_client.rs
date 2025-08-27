@@ -107,7 +107,6 @@ impl LspClient {
         }
     }
 
-
     pub fn is_ready(&self) -> bool {
         self.is_ready.load(Ordering::Relaxed)
     }
@@ -786,7 +785,7 @@ impl LspClient {
     pub async fn get_memory_usage_mb(&self) -> Option<u64> {
         if let Some(pid) = self.process_pid {
             let mut system = self.system.lock().await;
-            system.refresh_processes();
+            system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
 
             if let Some(process) = system.process(Pid::from_u32(pid)) {
                 // Convert from bytes to MB
