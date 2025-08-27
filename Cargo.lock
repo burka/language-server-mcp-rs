@@ -639,7 +639,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures",
  "glob",
+ "indexmap",
  "lsp-types",
  "rmcp",
  "schemars 0.8.22",

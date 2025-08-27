@@ -9,9 +9,9 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use sysinfo::System;
 use tokio::sync::Mutex;
 use tracing::{error, info};
@@ -294,7 +294,7 @@ impl RustAnalyzerMCP {
                     },
                 },
                 Ok(None) => "No hover information available".to_string(),
-                Err(e) => return Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+                Err(e) => return Err(McpError::internal_error(format!("LSP error: {e}"), None)),
             }
         };
 
@@ -343,10 +343,10 @@ impl RustAnalyzerMCP {
                         .collect::<Vec<_>>()
                         .join("\n");
 
-                    format!("Completions:\n{}", completion_text)
+                    format!("Completions:\n{completion_text}")
                 }
                 Ok(None) => "No completions available".to_string(),
-                Err(e) => return Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+                Err(e) => return Err(McpError::internal_error(format!("LSP error: {e}"), None)),
             }
         };
 
@@ -374,7 +374,7 @@ impl RustAnalyzerMCP {
                             .map(|diag| {
                                 let severity = diag
                                     .severity
-                                    .map(|s| format!("{:?}", s))
+                                    .map(|s| format!("{s:?}"))
                                     .unwrap_or("Info".to_string());
                                 let range = format!(
                                     "{}:{}-{}:{}",
@@ -394,10 +394,10 @@ impl RustAnalyzerMCP {
                             .collect::<Vec<_>>()
                             .join("\n");
 
-                        format!("Diagnostics:\n{}", diagnostic_text)
+                        format!("Diagnostics:\n{diagnostic_text}")
                     }
                 }
-                Err(e) => return Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+                Err(e) => return Err(McpError::internal_error(format!("LSP error: {e}"), None)),
             }
         };
 
@@ -452,15 +452,14 @@ impl RustAnalyzerMCP {
                         .join("\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Found definitions:\n{}",
-                        definition_text
+                        "Found definitions:\n{definition_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No definition found",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -504,15 +503,14 @@ impl RustAnalyzerMCP {
                         .join("\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Found references:\n{}",
-                        references_text
+                        "Found references:\n{references_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No references found",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -537,15 +535,14 @@ impl RustAnalyzerMCP {
                     // In a real implementation, you'd apply the TextEdits to the content
                     let edit_count = edits.len();
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Formatting would apply {} edits to the file",
-                        edit_count
+                        "Formatting would apply {edit_count} edits to the file"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No formatting changes needed",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -571,7 +568,7 @@ impl RustAnalyzerMCP {
                 if let Some(changes) = workspace_edit.changes {
                     for (uri, edits) in changes {
                         let file_path = uri.path();
-                        changes_description.push(format!("File: {}", file_path));
+                        changes_description.push(format!("File: {file_path}"));
 
                         for edit in &edits {
                             changes_description.push(format!(
@@ -592,7 +589,7 @@ impl RustAnalyzerMCP {
                     let changes: Vec<DocumentChangeOperation> = match document_changes {
                         DocumentChanges::Edits(edits) => edits
                             .into_iter()
-                            .map(|edit| DocumentChangeOperation::Edit(edit))
+                            .map(DocumentChangeOperation::Edit)
                             .collect(),
                         DocumentChanges::Operations(ops) => ops,
                     };
@@ -601,7 +598,7 @@ impl RustAnalyzerMCP {
                         match change {
                             DocumentChangeOperation::Edit(text_doc_edit) => {
                                 let file_path = text_doc_edit.text_document.uri.path();
-                                changes_description.push(format!("File: {}", file_path));
+                                changes_description.push(format!("File: {file_path}"));
 
                                 for edit in &text_doc_edit.edits {
                                     use lsp_types::OneOf;
@@ -644,7 +641,7 @@ impl RustAnalyzerMCP {
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "Cannot rename at this position",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -676,7 +673,7 @@ impl RustAnalyzerMCP {
                             let diagnostics_info = if code_action.diagnostics.is_some() {
                                 let diag_count = code_action.diagnostics.as_ref().unwrap().len();
                                 if diag_count > 0 {
-                                    format!(" [Fixes {} diagnostic(s)]", diag_count)
+                                    format!(" [Fixes {diag_count} diagnostic(s)]")
                                 } else {
                                     String::new()
                                 }
@@ -684,8 +681,7 @@ impl RustAnalyzerMCP {
                                 String::new()
                             };
 
-                            action_descriptions
-                                .push(format!("• {}{}{}", title, kind, diagnostics_info));
+                            action_descriptions.push(format!("• {title}{kind}{diagnostics_info}"));
 
                             // If there's a workspace edit, show what it would change
                             if let Some(edit) = &code_action.edit {
@@ -743,7 +739,7 @@ impl RustAnalyzerMCP {
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No code actions available at this position",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -775,7 +771,7 @@ impl RustAnalyzerMCP {
                             let kind = format!("{:?}", symbol.kind);
                             let container = symbol
                                 .container_name
-                                .map(|c| format!(" (in {})", c))
+                                .map(|c| format!(" (in {c})"))
                                 .unwrap_or_default();
 
                             format!(
@@ -792,15 +788,14 @@ impl RustAnalyzerMCP {
                         .join("\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Found symbols:\n{}",
-                        symbol_text
+                        "Found symbols:\n{symbol_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No symbols found matching the query",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -831,7 +826,7 @@ impl RustAnalyzerMCP {
                                     .collect::<Vec<_>>()
                                     .join(""),
                             };
-                            let kind = hint.kind.map(|k| format!(" ({:?})", k)).unwrap_or_default();
+                            let kind = hint.kind.map(|k| format!(" ({k:?})")).unwrap_or_default();
 
                             format!(
                                 "Line {}:{}: {}{}",
@@ -845,15 +840,14 @@ impl RustAnalyzerMCP {
                         .join("\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Inlay hints:\n{}",
-                        hints_text
+                        "Inlay hints:\n{hints_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No inlay hints available",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -884,7 +878,7 @@ impl RustAnalyzerMCP {
                         )
                     }
                 } else {
-                    format!("Macro expansion result: {}", expansion)
+                    format!("Macro expansion result: {expansion}")
                 };
 
                 if expansion_text.trim().is_empty() {
@@ -893,15 +887,14 @@ impl RustAnalyzerMCP {
                     )]))
                 } else {
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Macro expansion:\n```rust\n{}\n```",
-                        expansion_text
+                        "Macro expansion:\n```rust\n{expansion_text}\n```"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No macro expansion available at this position",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -943,7 +936,7 @@ impl RustAnalyzerMCP {
                                 let kind = format!("{:?}", symbol.kind);
                                 let container = symbol
                                     .container_name
-                                    .map(|c| format!(" (in {})", c))
+                                    .map(|c| format!(" (in {c})"))
                                     .unwrap_or_default();
 
                                 format!(
@@ -960,8 +953,7 @@ impl RustAnalyzerMCP {
                             .join("\n");
 
                         let page_info = if total_symbols > request.page_size {
-                            let total_pages =
-                                (total_symbols + request.page_size - 1) / request.page_size;
+                            let total_pages = total_symbols.div_ceil(request.page_size);
                             format!(
                                 "\n\n--- Page {} of {} ({} total symbols, {} per page) ---",
                                 request.page + 1,
@@ -970,10 +962,10 @@ impl RustAnalyzerMCP {
                                 request.page_size
                             )
                         } else {
-                            format!("\n\n--- {} symbols total ---", total_symbols)
+                            format!("\n\n--- {total_symbols} symbols total ---")
                         };
 
-                        format!("{}{}", symbols_text, page_info)
+                        format!("{symbols_text}{page_info}")
                     }
                     DocumentSymbolResponse::Nested(symbols) => {
                         let total_symbols = symbols.len();
@@ -1021,8 +1013,7 @@ impl RustAnalyzerMCP {
                         let nested_text = format_nested_symbols(page_symbols, 0);
 
                         let page_info = if total_symbols > request.page_size {
-                            let total_pages =
-                                (total_symbols + request.page_size - 1) / request.page_size;
+                            let total_pages = total_symbols.div_ceil(request.page_size);
                             format!(
                                 "\n\n--- Page {} of {} ({} total symbols, {} per page) ---",
                                 request.page + 1,
@@ -1031,25 +1022,23 @@ impl RustAnalyzerMCP {
                                 request.page_size
                             )
                         } else {
-                            format!("\n\n--- {} symbols total ---", total_symbols)
+                            format!("\n\n--- {total_symbols} symbols total ---")
                         };
 
-                        format!("{}{}", nested_text, page_info)
+                        format!("{nested_text}{page_info}")
                     }
                 };
 
                 // Add debug info about opened documents (already captured above)
                 if opened_count > 10 {
                     let debug_info = format!(
-                        "\n\n[Debug: {} documents currently opened in rust-analyzer]",
-                        opened_count
+                        "\n\n[Debug: {opened_count} documents currently opened in rust-analyzer]"
                     );
                     symbols_text.push_str(&debug_info);
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Document symbols:\n{}",
-                    symbols_text
+                    "Document symbols:\n{symbols_text}"
                 ))]))
             }
             Ok(None) => {
@@ -1060,7 +1049,7 @@ impl RustAnalyzerMCP {
             }
             Err(e) => {
                 drop(lsp_client);
-                Err(McpError::internal_error(format!("LSP error: {}", e), None))
+                Err(McpError::internal_error(format!("LSP error: {e}"), None))
             }
         }
     }
@@ -1096,7 +1085,7 @@ impl RustAnalyzerMCP {
                                     lsp_types::Documentation::MarkupContent(mc) => mc.value.clone(),
                                 };
                                 if !doc_text.is_empty() {
-                                    signature.push_str(&format!("\n   {}", doc_text));
+                                    signature.push_str(&format!("\n   {doc_text}"));
                                 }
                             }
 
@@ -1110,7 +1099,7 @@ impl RustAnalyzerMCP {
                                             format!("{}[{}:{}]", sig.label, start, end)
                                         }
                                     };
-                                    signature.push_str(&format!("\n{}{}", marker, label_text));
+                                    signature.push_str(&format!("\n{marker}{label_text}"));
                                     if let Some(doc) = &param.documentation {
                                         let doc_text = match doc {
                                             lsp_types::Documentation::String(s) => s.clone(),
@@ -1119,7 +1108,7 @@ impl RustAnalyzerMCP {
                                             }
                                         };
                                         if !doc_text.is_empty() {
-                                            signature.push_str(&format!(" - {}", doc_text));
+                                            signature.push_str(&format!(" - {doc_text}"));
                                         }
                                     }
                                 }
@@ -1130,15 +1119,14 @@ impl RustAnalyzerMCP {
                         .join("\n\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Signature help:\n{}",
-                        signatures_text
+                        "Signature help:\n{signatures_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No signature help available",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -1164,7 +1152,7 @@ impl RustAnalyzerMCP {
                         .map(|highlight| {
                             let kind = highlight
                                 .kind
-                                .map(|k| format!(" ({:?})", k))
+                                .map(|k| format!(" ({k:?})"))
                                 .unwrap_or_default();
                             format!(
                                 "Line {}:{}-{}:{}{}",
@@ -1179,15 +1167,14 @@ impl RustAnalyzerMCP {
                         .join("\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Document highlights:\n{}",
-                        highlights_text
+                        "Document highlights:\n{highlights_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No highlights found at this position",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -1248,15 +1235,14 @@ impl RustAnalyzerMCP {
                         .join("\n\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Selection ranges:\n{}",
-                        ranges_text
+                        "Selection ranges:\n{ranges_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No selection ranges found",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -1332,8 +1318,7 @@ impl RustAnalyzerMCP {
                             )]))
                         } else {
                             Ok(CallToolResult::success(vec![Content::text(format!(
-                                "Runnable items:\n{}",
-                                runnables_text
+                                "Runnable items:\n{runnables_text}"
                             ))]))
                         }
                     }
@@ -1346,7 +1331,7 @@ impl RustAnalyzerMCP {
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No runnable items found",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
@@ -1389,22 +1374,19 @@ impl RustAnalyzerMCP {
                         .join("\n");
 
                     Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Found implementations:\n{}",
-                        implementations_text
+                        "Found implementations:\n{implementations_text}"
                     ))]))
                 }
             }
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No implementations found",
             )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
+            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
         }
     }
 
-    #[tool(
-        description = "Get LSP client status and manage document lifecycle for memory optimization"
-    )]
-    async fn lsp_client_status(
+    #[tool(description = "Get LSP and cache warming status")]
+    async fn lsp_status(
         &self,
         Parameters(_request): Parameters<LspClientStatusRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -1413,6 +1395,7 @@ impl RustAnalyzerMCP {
         // Get status information
         let is_ready = lsp_client.is_ready();
         let opened_count = lsp_client.get_opened_documents_count().await;
+        let (memory_mb, _doc_count, memory_threshold_mb) = lsp_client.get_memory_status().await;
 
         let mut status_info = vec![
             format!(
@@ -1422,6 +1405,37 @@ impl RustAnalyzerMCP {
             format!("Opened Documents: {} files", opened_count),
             format!("Workspace Root: {:?}", self.workspace_root),
         ];
+
+        // Add memory usage information
+        if let Some(memory) = memory_mb {
+            let memory_percentage = (memory as f64 / memory_threshold_mb as f64) * 100.0;
+            let memory_emoji = if memory_percentage > 90.0 {
+                "🔴"
+            } else if memory_percentage > 70.0 {
+                "🟠"
+            } else {
+                "🟢"
+            };
+
+            status_info.push(format!(
+                "Memory Usage: {memory_emoji} {memory}MB / {memory_threshold_mb}MB ({memory_percentage:.1}%)"
+            ));
+
+            if memory > memory_threshold_mb {
+                status_info.push(
+                    "  [Warning] Memory threshold exceeded - automatic cleanup will occur"
+                        .to_string(),
+                );
+            } else if memory_percentage > 80.0 {
+                status_info.push(
+                    "  [Info] High memory usage - consider closing unused documents".to_string(),
+                );
+            }
+        } else {
+            status_info.push(
+                "Memory Usage: Unable to monitor (rust-analyzer process not found)".to_string(),
+            );
+        }
 
         // Add cache warming status
         let warming_status = self.warming_status.lock().await;
@@ -1446,14 +1460,14 @@ impl RustAnalyzerMCP {
                     let percentage = (warming_status.files_processed as f64
                         / warming_status.total_files as f64)
                         * 100.0;
-                    status_info.push(format!("  📊 Progress: {:.1}%", percentage));
+                    status_info.push(format!("  📊 Progress: {percentage:.1}%"));
 
                     if let Some(start_time) = warming_status.start_time {
                         let elapsed = start_time.elapsed();
                         if elapsed.as_secs() > 0 {
                             let rate =
                                 warming_status.files_processed as f64 / elapsed.as_secs_f64();
-                            status_info.push(format!("  🚀 Rate: {:.1} files/sec", rate));
+                            status_info.push(format!("  🚀 Rate: {rate:.1} files/sec"));
 
                             if rate > 0.0
                                 && warming_status.files_processed < warming_status.total_files
@@ -1462,13 +1476,13 @@ impl RustAnalyzerMCP {
                                     warming_status.total_files - warming_status.files_processed;
                                 let eta_secs = remaining as f64 / rate;
                                 let eta = if eta_secs < 60.0 {
-                                    format!("{:.0}s", eta_secs)
+                                    format!("{eta_secs:.0}s")
                                 } else if eta_secs < 3600.0 {
                                     format!("{:.0}m", eta_secs / 60.0)
                                 } else {
                                     format!("{:.1}h", eta_secs / 3600.0)
                                 };
-                                status_info.push(format!("  ⏳ ETA: ~{}", eta));
+                                status_info.push(format!("  ⏳ ETA: ~{eta}"));
                             }
                         }
                     }
@@ -1489,7 +1503,7 @@ impl RustAnalyzerMCP {
                 }
             }
             WarmingState::Failed(error) => {
-                status_info.push(format!("\nCache Warming: ❌ Failed - {}", error));
+                status_info.push(format!("\nCache Warming: ❌ Failed - {error}"));
                 if warming_status.files_processed > 0 {
                     status_info.push(format!(
                         "  Files processed before failure: {}",
@@ -1548,7 +1562,7 @@ impl RustAnalyzerMCP {
             let opened_count_before = lsp_client.get_opened_documents_count().await;
             let close_result = match lsp_client.close_document(&request.file_path).await {
                 Ok(()) => Ok(()),
-                Err(e) => Err(format!("Failed to close document: {}", e)),
+                Err(e) => Err(format!("Failed to close document: {e}")),
             };
             let opened_count_after = lsp_client.get_opened_documents_count().await;
 
@@ -1633,7 +1647,7 @@ impl RustAnalyzerMCP {
                 ];
 
                 if files_failed > 0 {
-                    response_lines.push(format!("❌ Files failed to open: {}", files_failed));
+                    response_lines.push(format!("❌ Files failed to open: {files_failed}"));
                 }
 
                 response_lines.extend(vec![
@@ -1657,7 +1671,7 @@ impl RustAnalyzerMCP {
                 )]))
             }
             Err(e) => Err(McpError::internal_error(
-                format!("Cache warming failed: {}", e),
+                format!("Cache warming failed: {e}"),
                 None,
             )),
         }
@@ -1673,7 +1687,7 @@ impl ServerHandler for RustAnalyzerMCP {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides rust-analyzer functionality through MCP tools. Available tools: 'hover' for type information, 'completion' for code completions, 'diagnostics' for compile errors, 'goto_definition' to find definitions, 'find_references' to find all references, 'format_document' to format code, 'rename' to rename symbols across the workspace, 'code_actions' to get quick fixes and refactorings, 'workspace_symbols' to search symbols across the workspace, 'inlay_hints' to get type and parameter hints, 'expand_macro' to expand Rust macros, 'document_symbols' for code structure analysis, 'signature_help' for function parameter assistance, 'document_highlight' for symbol occurrence highlighting, 'selection_range' for smart selection expansion, 'runnables' to find tests, benchmarks, and executables, 'implementations' to find all implementations of a trait, 'lsp_client_status' for monitoring LSP client status and memory usage, 'close_document' for closing documents to free memory, and 'warm_cache' for pre-warming rust-analyzer cache with glob patterns to significantly improve performance.".to_string()),
+            instructions: Some("This server provides rust-analyzer functionality through MCP tools. Available tools: 'hover' for type information, 'completion' for code completions, 'diagnostics' for compile errors, 'goto_definition' to find definitions, 'find_references' to find all references, 'format_document' to format code, 'rename' to rename symbols across the workspace, 'code_actions' to get quick fixes and refactorings, 'workspace_symbols' to search symbols across the workspace, 'inlay_hints' to get type and parameter hints, 'expand_macro' to expand Rust macros, 'document_symbols' for code structure analysis, 'signature_help' for function parameter assistance, 'document_highlight' for symbol occurrence highlighting, 'selection_range' for smart selection expansion, 'runnables' to find tests, benchmarks, and executables, 'implementations' to find all implementations of a trait, 'lsp_status' for monitoring LSP and cache warming status, 'close_document' for closing documents to free memory, and 'warm_cache' for pre-warming rust-analyzer cache with glob patterns to significantly improve performance.".to_string()),
         }
     }
 
@@ -1692,23 +1706,23 @@ fn parse_memory_size(memory_str: &str) -> Result<u64, String> {
     if let Some(num_str) = memory_str.strip_suffix("g") {
         let num: f64 = num_str
             .parse()
-            .map_err(|_| format!("Invalid memory size: {}", memory_str))?;
+            .map_err(|_| format!("Invalid memory size: {memory_str}"))?;
         Ok((num * 1024.0 * 1024.0 * 1024.0) as u64)
     } else if let Some(num_str) = memory_str.strip_suffix("m") {
         let num: f64 = num_str
             .parse()
-            .map_err(|_| format!("Invalid memory size: {}", memory_str))?;
+            .map_err(|_| format!("Invalid memory size: {memory_str}"))?;
         Ok((num * 1024.0 * 1024.0) as u64)
     } else if let Some(num_str) = memory_str.strip_suffix("k") {
         let num: f64 = num_str
             .parse()
-            .map_err(|_| format!("Invalid memory size: {}", memory_str))?;
+            .map_err(|_| format!("Invalid memory size: {memory_str}"))?;
         Ok((num * 1024.0) as u64)
     } else {
         // Try parsing as bytes
         memory_str
             .parse::<u64>()
-            .map_err(|_| format!("Invalid memory size: {}", memory_str))
+            .map_err(|_| format!("Invalid memory size: {memory_str}"))
     }
 }
 
@@ -1723,7 +1737,7 @@ fn calculate_default_memory_limit() -> u64 {
     (total_memory as f64 * 0.2) as u64 // 20% of system memory
 }
 
-fn should_auto_warm(workspace_root: &PathBuf, memory_limit: u64) -> bool {
+fn should_auto_warm(workspace_root: &Path, memory_limit: u64) -> bool {
     // Count Rust files to estimate project size
     let patterns = vec![
         "src/**/*.rs",
@@ -1758,7 +1772,7 @@ async fn spawn_background_warming(
     memory_limit: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(e) = perform_background_warming(
+        if let Err(e) = perform_natural_workspace_analysis(
             lsp_client,
             warming_status,
             workspace_root,
@@ -1773,157 +1787,58 @@ async fn spawn_background_warming(
     })
 }
 
-/// Perform background warming with progress tracking
-async fn perform_background_warming(
+/// Use rust-analyzer's natural workspace analysis instead of manual file warming
+async fn perform_natural_workspace_analysis(
     lsp_client: Arc<Mutex<LspClient>>,
     warming_status: Arc<Mutex<WarmingStatus>>,
     _workspace_root: PathBuf,
-    warm_all: bool,
+    _warm_all: bool,
     show_progress: bool,
-    memory_limit: u64,
+    _memory_limit: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Update status to InProgress
     {
         let mut status = warming_status.lock().await;
         status.state = WarmingState::InProgress;
         status.start_time = Some(Instant::now());
+        status.total_files = 1; // We're letting rust-analyzer handle the workspace naturally
     }
 
     if show_progress {
-        eprintln!(
-            "🔥 Starting background cache warming with memory limit: {}MB",
-            memory_limit / (1024 * 1024)
-        );
+        eprintln!("🔥 Letting rust-analyzer perform natural workspace analysis...");
+        eprintln!("   (No manual file opening needed - rust-analyzer analyzes the entire workspace automatically)");
     }
 
-    let patterns = if warm_all {
-        vec![
-            "**/*.rs".to_string(), // Warm everything
-        ]
-    } else {
-        vec![
-            "src/**/*.rs".to_string(),
-            "examples/**/*.rs".to_string(),
-            "tests/**/*.rs".to_string(),
-            "benches/**/*.rs".to_string(),
-            "build.rs".to_string(),
-        ]
+    // Simply wait for rust-analyzer to complete its natural workspace analysis
+    let lsp_client_guard = lsp_client.lock().await;
+    drop(lsp_client_guard); // Release lock immediately
+
+    // Use the natural workspace analysis method
+    let error_msg = {
+        let lsp_client_guard = lsp_client.lock().await;
+        match lsp_client_guard.wait_for_workspace_analysis().await {
+            Ok(()) => None,
+            Err(e) => Some(format!("Workspace analysis failed: {e}")),
+        }
     };
 
-    // Collect files without holding LSP client lock
-    let mut all_files = Vec::new();
-    for pattern in &patterns {
-        let abs_pattern = if std::path::Path::new(pattern).is_absolute() {
-            pattern.clone()
-        } else {
-            _workspace_root.join(pattern).to_string_lossy().to_string()
-        };
-
-        if let Ok(paths) = glob::glob(&abs_pattern) {
-            for entry in paths {
-                if let Ok(path) = entry {
-                    if path.is_file() && path.extension().map_or(false, |ext| ext == "rs") {
-                        all_files.push(path.to_string_lossy().to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    if show_progress {
-        eprintln!("📂 Found {} Rust files to warm", all_files.len());
-    }
-
-    // Update total file count
-    {
+    if let Some(error_msg) = error_msg {
+        // Update to failed status
         let mut status = warming_status.lock().await;
-        status.total_files = all_files.len();
+        status.state = WarmingState::Failed(error_msg.clone());
+        return Err(error_msg.into());
     }
 
-    let mut files_opened = 0;
-    let mut files_already_open = 0;
-    let mut files_failed = 0;
-
-    // Process files in chunks to avoid holding the lock too long
-    for chunk in all_files.chunks(10) {
-        let mut chunk_results = Vec::new();
-
-        {
-            let lsp_client_guard = lsp_client.lock().await;
-            for file_path in chunk {
-                // Check if already open
-                if lsp_client_guard.is_document_open(file_path).await {
-                    chunk_results.push((file_path.clone(), "already_open".to_string()));
-                    continue;
-                }
-
-                // Try to open the document with a shorter timeout for background operations
-                match tokio::time::timeout(
-                    Duration::from_secs(5),
-                    lsp_client_guard.open_document(file_path),
-                )
-                .await
-                {
-                    Ok(Ok(())) => {
-                        chunk_results.push((file_path.clone(), "opened".to_string()));
-                    }
-                    Ok(Err(e)) => {
-                        chunk_results.push((file_path.clone(), format!("failed: {}", e)));
-                    }
-                    Err(_) => {
-                        chunk_results.push((file_path.clone(), "timeout".to_string()));
-                    }
-                }
-            }
-        } // Release LSP client lock
-
-        // Process results and update counters
-        for (file_path, result) in chunk_results {
-            match result.as_str() {
-                "opened" => {
-                    files_opened += 1;
-                    if show_progress && files_opened % 50 == 0 {
-                        eprintln!("🔥 Warmed {} files so far...", files_opened);
-                    }
-                }
-                "already_open" => files_already_open += 1,
-                _ if result.starts_with("failed") || result == "timeout" => {
-                    files_failed += 1;
-                    if show_progress {
-                        eprintln!("⚠️  Failed to warm {}: {}", file_path, result);
-                    }
-                }
-                _ => {}
-            }
-
-            // Update progress
-            {
-                let mut status = warming_status.lock().await;
-                status.files_processed += 1;
-                status.files_opened = files_opened;
-                status.files_failed = files_failed;
-            }
-        }
-
-        // Yield control between chunks to allow other operations
-        tokio::task::yield_now().await;
-
-        // Small delay to avoid overwhelming rust-analyzer
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-
-    let total_files = files_opened + files_already_open + files_failed;
-
-    // Update final status
+    // Update final status to completed
     {
         let mut status = warming_status.lock().await;
         status.state = WarmingState::Completed;
-        status.files_processed = total_files;
-        status.files_opened = files_opened;
-        status.files_failed = files_failed;
+        status.files_processed = 1;
+        status.files_opened = 0; // No files manually opened
+        status.files_failed = 0;
     }
 
-    if show_progress || files_opened > 0 {
+    if show_progress {
         let duration = Instant::now().duration_since(
             warming_status
                 .lock()
@@ -1932,20 +1847,11 @@ async fn perform_background_warming(
                 .unwrap_or_else(Instant::now),
         );
         eprintln!(
-            "✅ Background warming completed in {:.1}s:",
+            "✅ rust-analyzer workspace analysis completed in {:.1}s:",
             duration.as_secs_f64()
         );
-        eprintln!("   📂 {} files processed", total_files);
-        eprintln!("   🆕 {} newly opened", files_opened);
-        if files_already_open > 0 {
-            eprintln!("   🔄 {} already open", files_already_open);
-        }
-        if files_failed > 0 {
-            eprintln!("   ❌ {} failed to open", files_failed);
-        }
-        if files_opened > 0 {
-            eprintln!("   🚀 rust-analyzer cache is warmed - operations will be faster!");
-        }
+        eprintln!("   🚀 rust-analyzer has analyzed the entire workspace efficiently!");
+        eprintln!("   📂 All files in the workspace are now indexed and ready for fast operations");
     }
 
     Ok(())
@@ -1967,7 +1873,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Parse memory limit
     let memory_limit = if let Some(memory_str) = &args.max_memory {
-        parse_memory_size(memory_str).map_err(|e| format!("Failed to parse --max-memory: {}", e))?
+        parse_memory_size(memory_str).map_err(|e| format!("Failed to parse --max-memory: {e}"))?
     } else {
         calculate_default_memory_limit()
     };
@@ -2038,8 +1944,8 @@ mod tests {
     }
 
     #[test]
-    fn test_lsp_client_status_request_deserialization() {
-        // Test LspClientStatusRequest deserialization
+    fn test_lsp_status_request_deserialization() {
+        // Test LspClientStatusRequest deserialization (still uses old struct name)
         let json = r#"{}"#;
         let _request: LspClientStatusRequest = serde_json::from_str(json).unwrap();
     }

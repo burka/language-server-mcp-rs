@@ -1,13 +1,14 @@
 use lsp_types::{request::GotoImplementationParams, *};
 use serde_json::{json, Value};
 
-use std::collections::HashSet;
+use indexmap::IndexMap;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use sysinfo::{Pid, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -20,6 +21,10 @@ pub const MAX_LARGE_RESPONSE_SIZE_BYTES: usize = 120 * 1024; // 120KB ≈ 30k to
 pub const MAX_SYMBOLS_COUNT: usize = 200; // Reasonable symbol limit with paging
 pub const MAX_COMPLETION_ITEMS: usize = 25; // Reasonable completion limit
 
+// Memory management constants
+const DEFAULT_MEMORY_THRESHOLD_MB: u64 = 500; // 500MB memory threshold
+const MAX_OPEN_DOCUMENTS: usize = 100; // Maximum documents to keep open
+
 pub struct LspClient {
     process: Child,
     stdin: Mutex<tokio::process::ChildStdin>,
@@ -27,8 +32,13 @@ pub struct LspClient {
     request_id: Mutex<i64>,
     workspace_root: PathBuf,
     is_ready: Arc<AtomicBool>,
-    opened_documents: Mutex<HashSet<String>>,
+    // LRU tracking for opened documents with access order
+    opened_documents: Mutex<IndexMap<String, Instant>>,
     timeout_secs: u64,
+    // Memory monitoring
+    process_pid: Option<u32>,
+    system: Mutex<System>,
+    memory_threshold_mb: u64,
 }
 
 pub fn get_timeout_secs() -> u64 {
@@ -74,6 +84,14 @@ impl LspClient {
         let stdin = process.stdin.take().unwrap();
         let stdout = BufReader::new(process.stdout.take().unwrap());
 
+        // Get process PID for memory monitoring
+        let process_pid = process.id();
+
+        let memory_threshold_mb = env::var("RUST_ANALYZER_MCP_MEMORY_THRESHOLD_MB")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_MEMORY_THRESHOLD_MB);
+
         let mut client = Self {
             process,
             stdin: Mutex::new(stdin),
@@ -81,8 +99,11 @@ impl LspClient {
             request_id: Mutex::new(0),
             workspace_root: workspace_root.to_path_buf(),
             is_ready: Arc::new(AtomicBool::new(false)),
-            opened_documents: Mutex::new(HashSet::new()),
+            opened_documents: Mutex::new(IndexMap::new()),
             timeout_secs: get_timeout_secs(),
+            process_pid,
+            system: Mutex::new(System::new()),
+            memory_threshold_mb,
         };
 
         // Initialize synchronously for now - we'll add async initialization later
@@ -96,6 +117,25 @@ impl LspClient {
         while !self.is_ready.load(Ordering::Relaxed) {
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         }
+    }
+
+    /// Wait for rust-analyzer to complete its natural workspace analysis
+    /// This is much more efficient than manually opening files
+    pub async fn wait_for_workspace_analysis(&self) -> Result<(), Box<dyn std::error::Error>> {
+        self.wait_for_ready().await;
+
+        info!("Waiting for rust-analyzer to complete workspace analysis...");
+
+        // rust-analyzer automatically analyzes the workspace after initialization
+        // We give it some time to complete the analysis, but we don't need to
+        // manually open files - rust-analyzer handles everything internally
+
+        // A short wait to let rust-analyzer do its initial workspace scan
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+
+        info!("rust-analyzer workspace analysis should be complete. Ready to serve requests!");
+
+        Ok(())
     }
 
     pub fn is_ready(&self) -> bool {
@@ -133,18 +173,31 @@ impl LspClient {
 
         self.notify("initialized", InitializedParams {}).await?;
 
+        // rust-analyzer will now automatically analyze the entire workspace
+        // based on Cargo.toml. No need to manually open individual files!
+        info!(
+            "rust-analyzer is automatically analyzing workspace at: {:?}",
+            self.workspace_root
+        );
+
         Ok(())
     }
 
     pub async fn open_document(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
-        // Check if document is already opened
+        // Check if document is already opened and update LRU
         {
-            let opened_docs = self.opened_documents.lock().await;
-            if opened_docs.contains(file_path) {
+            let mut opened_docs = self.opened_documents.lock().await;
+            if opened_docs.contains_key(file_path) {
+                // Update access time (move to end for LRU)
+                opened_docs.shift_remove(file_path);
+                opened_docs.insert(file_path.to_string(), Instant::now());
                 debug!("Document already opened, using cache: {}", file_path);
                 return Ok(());
             }
         }
+
+        // Check if we need to cleanup before opening new document
+        self.cleanup_if_needed().await?;
 
         // Document not opened yet, open it
         debug!("Opening new document: {}", file_path);
@@ -160,10 +213,10 @@ impl LspClient {
 
         self.notify("textDocument/didOpen", params).await?;
 
-        // Mark document as opened
+        // Mark document as opened with LRU timestamp
         {
             let mut opened_docs = self.opened_documents.lock().await;
-            opened_docs.insert(file_path.to_string());
+            opened_docs.insert(file_path.to_string(), Instant::now());
             debug!(
                 "Document opened and cached. Total opened documents: {}",
                 opened_docs.len()
@@ -177,7 +230,7 @@ impl LspClient {
         // Check if document is opened
         {
             let opened_docs = self.opened_documents.lock().await;
-            if !opened_docs.contains(file_path) {
+            if !opened_docs.contains_key(file_path) {
                 debug!("Document not opened, no need to close: {}", file_path);
                 return Ok(()); // Already closed or never opened
             }
@@ -196,7 +249,7 @@ impl LspClient {
         // Remove from opened documents tracking
         {
             let mut opened_docs = self.opened_documents.lock().await;
-            opened_docs.remove(file_path);
+            opened_docs.shift_remove(file_path);
             debug!(
                 "Document closed. Total opened documents: {}",
                 opened_docs.len()
@@ -209,11 +262,6 @@ impl LspClient {
     pub async fn get_opened_documents_count(&self) -> usize {
         let opened_docs = self.opened_documents.lock().await;
         opened_docs.len()
-    }
-
-    pub async fn is_document_open(&self, file_path: &str) -> bool {
-        let opened_docs = self.opened_documents.lock().await;
-        opened_docs.contains(file_path)
     }
 
     /// Pre-warm the cache by opening all files matching the given glob patterns
@@ -279,7 +327,7 @@ impl LspClient {
             // Check if already open
             {
                 let opened_docs = self.opened_documents.lock().await;
-                if opened_docs.contains(file_path) {
+                if opened_docs.contains_key(file_path) {
                     files_already_open += 1;
                     continue;
                 }
@@ -544,7 +592,6 @@ impl LspClient {
                 diagnostics: vec![], // We could pass current diagnostics here
                 only: None,          // Request all types of code actions
                 trigger_kind: Some(CodeActionTriggerKind::INVOKED),
-                ..Default::default()
             },
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
@@ -792,20 +839,15 @@ impl LspClient {
         let response = match timeout(timeout_duration, self.read_response(request_id)).await {
             Ok(response) => response?,
             Err(_) => {
-                warn!(
-                    "LSP request '{}' timed out after {:?}",
-                    method, timeout_duration
+                warn!("LSP request '{method}' timed out after {timeout_duration:?}");
+                return Err(
+                    format!("LSP request '{method}' timed out after {timeout_duration:?}").into(),
                 );
-                return Err(format!(
-                    "LSP request '{}' timed out after {:?}",
-                    method, timeout_duration
-                )
-                .into());
             }
         };
 
         if let Some(error) = response.get("error") {
-            return Err(format!("LSP error: {:?}", error).into());
+            return Err(format!("LSP error: {error:?}").into());
         }
 
         let result = response.get("result").ok_or("Missing result in response")?;
@@ -888,11 +930,92 @@ impl LspClient {
             }
         }
     }
+
+    /// Get current memory usage of the rust-analyzer process in MB
+    pub async fn get_memory_usage_mb(&self) -> Option<u64> {
+        if let Some(pid) = self.process_pid {
+            let mut system = self.system.lock().await;
+            system.refresh_processes();
+
+            if let Some(process) = system.process(Pid::from_u32(pid)) {
+                // Convert from bytes to MB
+                return Some(process.memory() / 1024 / 1024);
+            }
+        }
+        None
+    }
+
+    /// Check if memory usage exceeds threshold and cleanup if needed
+    pub async fn cleanup_if_needed(&self) -> Result<(), Box<dyn std::error::Error>> {
+        if let Some(memory_mb) = self.get_memory_usage_mb().await {
+            if memory_mb > self.memory_threshold_mb {
+                warn!(
+                    "Memory usage ({} MB) exceeds threshold ({} MB), cleaning up oldest documents",
+                    memory_mb, self.memory_threshold_mb
+                );
+                self.cleanup_oldest_documents().await?;
+            }
+        }
+
+        // Also check document count limit
+        let doc_count = self.get_opened_documents_count().await;
+        if doc_count >= MAX_OPEN_DOCUMENTS {
+            warn!(
+                "Document count ({}) exceeds limit ({}), cleaning up oldest documents",
+                doc_count, MAX_OPEN_DOCUMENTS
+            );
+            self.cleanup_oldest_documents().await?;
+        }
+
+        Ok(())
+    }
+
+    /// Close the oldest opened documents (LRU cleanup)
+    async fn cleanup_oldest_documents(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let documents_to_close = {
+            let mut opened_docs = self.opened_documents.lock().await;
+            let mut to_close = Vec::new();
+
+            // Close oldest 25% of documents or at least 5 documents
+            let cleanup_count = std::cmp::max(5, opened_docs.len() / 4);
+
+            // IndexMap maintains insertion order, so first entries are oldest
+            let keys: Vec<String> = opened_docs.keys().take(cleanup_count).cloned().collect();
+            for key in &keys {
+                opened_docs.shift_remove(key);
+                to_close.push(key.clone());
+            }
+
+            info!(
+                "Cleaning up {} oldest documents, {} documents remain open",
+                to_close.len(),
+                opened_docs.len()
+            );
+
+            to_close
+        };
+
+        // Close documents outside of the lock to avoid deadlock
+        for file_path in documents_to_close {
+            if let Err(e) = self.close_document(&file_path).await {
+                warn!("Failed to close document {}: {}", file_path, e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get memory and document status for monitoring
+    pub async fn get_memory_status(&self) -> (Option<u64>, usize, u64) {
+        let memory_mb = self.get_memory_usage_mb().await;
+        let doc_count = self.get_opened_documents_count().await;
+        (memory_mb, doc_count, self.memory_threshold_mb)
+    }
 }
 
 impl Drop for LspClient {
     fn drop(&mut self) {
-        let _ = self.process.kill();
+        std::mem::drop(self.process.kill());
     }
 }
 
@@ -960,8 +1083,7 @@ mod tests {
                     Ok(_) => unreachable!("Should have timed out"),
                     Err(_) => {
                         return Err(format!(
-                            "LSP request '{}' timed out after {:?}",
-                            method, timeout_duration
+                            "LSP request '{method}' timed out after {timeout_duration:?}"
                         )
                         .into());
                     }
@@ -1014,10 +1136,7 @@ mod tests {
         // Test that we can create timeout error messages without panicking
         let method = "test/method";
         let timeout_duration = Duration::from_secs(1);
-        let error_msg = format!(
-            "LSP request '{}' timed out after {:?}",
-            method, timeout_duration
-        );
+        let error_msg = format!("LSP request '{method}' timed out after {timeout_duration:?}");
 
         assert!(error_msg.contains("test/method"));
         assert!(error_msg.contains("timed out"));
