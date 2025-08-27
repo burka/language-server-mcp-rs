@@ -12,7 +12,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::{self, EnvFilter};
 
 mod lsp_client;
@@ -1446,11 +1446,13 @@ impl ServerHandler for RustAnalyzerMCP {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
+    // Initialize tracing with fallback to sink if stderr unavailable (e.g., in Claude Code)
+    // This prevents "Broken pipe" panic when stderr is not connected
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with_writer(std::io::stderr)
+        .with_writer(std::io::sink)  // Use null writer - MCP doesn't need stderr logging
         .with_ansi(false)
-        .init();
+        .try_init();  // Silently ignore if already initialized
 
     info!("Starting rust-analyzer MCP server");
 
@@ -1462,9 +1464,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mcp_service = RustAnalyzerMCP::new(workspace_root).await?;
 
     // Start MCP service - server is immediately responsive
-    let service = mcp_service.serve(stdio()).await.inspect_err(|e| {
-        error!("serving error: {:?}", e);
-    })?;
+    let service = mcp_service.serve(stdio()).await?;
 
     info!("MCP server is running");
     service.waiting().await?;
