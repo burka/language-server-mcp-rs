@@ -205,11 +205,6 @@ impl Default for WarmingStatus {
     }
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct WarmingStatusRequest {
-    // No parameters needed - just returns status info
-}
-
 #[derive(Debug, Parser)]
 #[command(name = "language-server-mcp")]
 #[command(about = "Rust-analyzer MCP server with smart cache warming")]
@@ -269,70 +264,6 @@ impl RustAnalyzerMCP {
         &self.workspace_root
     }
 
-    /// Get warming progress suffix for tool responses
-    async fn get_warming_progress_suffix(&self) -> String {
-        let status = self.warming_status.lock().await;
-        match &status.state {
-            WarmingState::InProgress => {
-                if status.total_files > 0 {
-                    let percentage =
-                        (status.files_processed as f64 / status.total_files as f64) * 100.0;
-                    let rate = if let Some(start_time) = status.start_time {
-                        let elapsed = start_time.elapsed();
-                        if elapsed.as_secs() > 0 {
-                            status.files_processed as f64 / elapsed.as_secs_f64()
-                        } else {
-                            0.0
-                        }
-                    } else {
-                        0.0
-                    };
-
-                    let eta = if rate > 0.0 && status.files_processed < status.total_files {
-                        let remaining_files = status.total_files - status.files_processed;
-                        let eta_secs = remaining_files as f64 / rate;
-                        if eta_secs < 60.0 {
-                            format!("~{:.0}s remaining", eta_secs)
-                        } else if eta_secs < 3600.0 {
-                            format!("~{:.0}m remaining", eta_secs / 60.0)
-                        } else {
-                            format!("~{:.1}h remaining", eta_secs / 3600.0)
-                        }
-                    } else {
-                        "calculating...".to_string()
-                    };
-
-                    format!(
-                        "\n\nCache warming: {}/{} files ({:.1}%) | {:.0} files/sec | {}",
-                        status.files_processed, status.total_files, percentage, rate, eta
-                    )
-                } else {
-                    "\n\nCache warming: initializing...".to_string()
-                }
-            }
-            WarmingState::Completed => {
-                if status.files_opened > 0 {
-                    format!(
-                        "\n\nCache warming: ✅ Completed ({} files warmed)",
-                        status.files_opened
-                    )
-                } else {
-                    String::new()
-                }
-            }
-            WarmingState::Failed(error) => {
-                format!("\n\nCache warming: ❌ Failed ({})", error)
-            }
-            WarmingState::Paused => {
-                format!(
-                    "\n\nCache warming: ⏸️  Paused ({}/{} files)",
-                    status.files_processed, status.total_files
-                )
-            }
-            WarmingState::NotStarted => String::new(),
-        }
-    }
-
     #[tool(description = "Get type information and documentation at a specific position")]
     async fn hover(
         &self,
@@ -367,11 +298,7 @@ impl RustAnalyzerMCP {
             }
         };
 
-        let progress_suffix = self.get_warming_progress_suffix().await;
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "{}{}",
-            content, progress_suffix
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
     #[tool(description = "Get code completions at a specific position")]
@@ -423,11 +350,7 @@ impl RustAnalyzerMCP {
             }
         };
 
-        let progress_suffix = self.get_warming_progress_suffix().await;
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "{}{}",
-            content, progress_suffix
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
     #[tool(description = "Get compile errors and warnings for a file")]
@@ -478,11 +401,7 @@ impl RustAnalyzerMCP {
             }
         };
 
-        let progress_suffix = self.get_warming_progress_suffix().await;
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "{}{}",
-            content, progress_suffix
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
     #[tool(description = "Find definition of symbol at position")]
@@ -1504,6 +1423,90 @@ impl RustAnalyzerMCP {
             format!("Workspace Root: {:?}", self.workspace_root),
         ];
 
+        // Add cache warming status
+        let warming_status = self.warming_status.lock().await;
+        match &warming_status.state {
+            WarmingState::NotStarted => {
+                status_info.push("\nCache Warming: Not started".to_string());
+            }
+            WarmingState::InProgress => {
+                status_info.push("\nCache Warming: 🔥 In Progress".to_string());
+                status_info.push(format!("  📂 Total files: {}", warming_status.total_files));
+                status_info.push(format!(
+                    "  ✅ Processed: {}",
+                    warming_status.files_processed
+                ));
+                status_info.push(format!("  🆕 Opened: {}", warming_status.files_opened));
+
+                if warming_status.files_failed > 0 {
+                    status_info.push(format!("  ❌ Failed: {}", warming_status.files_failed));
+                }
+
+                if warming_status.total_files > 0 {
+                    let percentage = (warming_status.files_processed as f64
+                        / warming_status.total_files as f64)
+                        * 100.0;
+                    status_info.push(format!("  📊 Progress: {:.1}%", percentage));
+
+                    if let Some(start_time) = warming_status.start_time {
+                        let elapsed = start_time.elapsed();
+                        if elapsed.as_secs() > 0 {
+                            let rate =
+                                warming_status.files_processed as f64 / elapsed.as_secs_f64();
+                            status_info.push(format!("  🚀 Rate: {:.1} files/sec", rate));
+
+                            if rate > 0.0
+                                && warming_status.files_processed < warming_status.total_files
+                            {
+                                let remaining =
+                                    warming_status.total_files - warming_status.files_processed;
+                                let eta_secs = remaining as f64 / rate;
+                                let eta = if eta_secs < 60.0 {
+                                    format!("{:.0}s", eta_secs)
+                                } else if eta_secs < 3600.0 {
+                                    format!("{:.0}m", eta_secs / 60.0)
+                                } else {
+                                    format!("{:.1}h", eta_secs / 3600.0)
+                                };
+                                status_info.push(format!("  ⏳ ETA: ~{}", eta));
+                            }
+                        }
+                    }
+                }
+            }
+            WarmingState::Completed => {
+                status_info.push("\nCache Warming: ✅ Completed".to_string());
+                status_info.push(format!(
+                    "  📂 Total processed: {}",
+                    warming_status.total_files
+                ));
+                status_info.push(format!(
+                    "  🆕 Files warmed: {}",
+                    warming_status.files_opened
+                ));
+                if warming_status.files_failed > 0 {
+                    status_info.push(format!("  ❌ Failed: {}", warming_status.files_failed));
+                }
+            }
+            WarmingState::Failed(error) => {
+                status_info.push(format!("\nCache Warming: ❌ Failed - {}", error));
+                if warming_status.files_processed > 0 {
+                    status_info.push(format!(
+                        "  Files processed before failure: {}",
+                        warming_status.files_processed
+                    ));
+                }
+            }
+            WarmingState::Paused => {
+                status_info.push("\nCache Warming: ⏸️  Paused".to_string());
+                status_info.push(format!(
+                    "  Progress: {}/{} files",
+                    warming_status.files_processed, warming_status.total_files
+                ));
+            }
+        }
+        drop(warming_status); // Release the lock
+
         // Add memory optimization suggestion if many documents are open
         if opened_count > 20 {
             status_info.push("\n[Warning] Many documents are open in rust-analyzer.".to_string());
@@ -1576,112 +1579,6 @@ impl RustAnalyzerMCP {
             }
             Err(error_msg) => Err(McpError::internal_error(error_msg, None)),
         }
-    }
-
-    #[tool(description = "Get cache warming status and progress")]
-    async fn warming_status(
-        &self,
-        Parameters(_request): Parameters<WarmingStatusRequest>,
-    ) -> Result<CallToolResult, McpError> {
-        let status = self.warming_status.lock().await;
-        let status_clone = status.clone();
-        drop(status);
-
-        let mut response_lines = vec![format!("Cache Warming Status: {:?}", status_clone.state)];
-
-        match &status_clone.state {
-            WarmingState::NotStarted => {
-                response_lines.push("Cache warming has not been started yet.".to_string());
-            }
-            WarmingState::InProgress => {
-                response_lines.extend(vec![
-                    format!("📂 Total files to process: {}", status_clone.total_files),
-                    format!("✅ Files processed: {}", status_clone.files_processed),
-                    format!("🆕 Files newly opened: {}", status_clone.files_opened),
-                ]);
-
-                if status_clone.files_failed > 0 {
-                    response_lines.push(format!("❌ Files failed: {}", status_clone.files_failed));
-                }
-
-                if status_clone.total_files > 0 {
-                    let percentage = (status_clone.files_processed as f64
-                        / status_clone.total_files as f64)
-                        * 100.0;
-                    response_lines.push(format!("📊 Progress: {:.1}%", percentage));
-                }
-
-                if let Some(start_time) = status_clone.start_time {
-                    let elapsed = start_time.elapsed();
-                    response_lines.push(format!("⏱️  Elapsed time: {:.1}s", elapsed.as_secs_f64()));
-
-                    if elapsed.as_secs() > 0 {
-                        let rate = status_clone.files_processed as f64 / elapsed.as_secs_f64();
-                        response_lines.push(format!("🚀 Processing rate: {:.1} files/sec", rate));
-
-                        if rate > 0.0 && status_clone.files_processed < status_clone.total_files {
-                            let remaining_files =
-                                status_clone.total_files - status_clone.files_processed;
-                            let eta_secs = remaining_files as f64 / rate;
-                            let eta_str = if eta_secs < 60.0 {
-                                format!("{:.0}s", eta_secs)
-                            } else if eta_secs < 3600.0 {
-                                format!("{:.0}m", eta_secs / 60.0)
-                            } else {
-                                format!("{:.1}h", eta_secs / 3600.0)
-                            };
-                            response_lines.push(format!("⏳ Estimated completion: ~{}", eta_str));
-                        }
-                    }
-                }
-            }
-            WarmingState::Completed => {
-                response_lines.extend(vec![
-                    format!("📂 Total files processed: {}", status_clone.total_files),
-                    format!(
-                        "✅ Files successfully opened: {}",
-                        status_clone.files_opened
-                    ),
-                ]);
-
-                if status_clone.files_failed > 0 {
-                    response_lines.push(format!("❌ Files failed: {}", status_clone.files_failed));
-                }
-
-                if let Some(start_time) = status_clone.start_time {
-                    let elapsed = start_time.elapsed();
-                    response_lines.push(format!("⏱️  Total time: {:.1}s", elapsed.as_secs_f64()));
-                }
-
-                response_lines.push(
-                    "🚀 rust-analyzer cache is now warmed - operations will be faster!".to_string(),
-                );
-            }
-            WarmingState::Failed(error) => {
-                response_lines.push(format!("Error: {}", error));
-                if status_clone.files_processed > 0 {
-                    response_lines.push(format!(
-                        "Files processed before failure: {}",
-                        status_clone.files_processed
-                    ));
-                }
-            }
-            WarmingState::Paused => {
-                response_lines.extend(vec![
-                    format!("📂 Total files: {}", status_clone.total_files),
-                    format!("✅ Files processed: {}", status_clone.files_processed),
-                    format!("🆕 Files opened: {}", status_clone.files_opened),
-                ]);
-                if status_clone.files_failed > 0 {
-                    response_lines.push(format!("❌ Files failed: {}", status_clone.files_failed));
-                }
-                response_lines.push("Use warming controls to resume or restart.".to_string());
-            }
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(
-            response_lines.join("\n"),
-        )]))
     }
 
     #[tool(
