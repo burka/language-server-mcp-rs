@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use sysinfo::{Pid, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -107,24 +107,6 @@ impl LspClient {
         }
     }
 
-    /// Wait for rust-analyzer to complete its natural workspace analysis
-    /// This is much more efficient than manually opening files
-    pub async fn wait_for_workspace_analysis(&self) -> Result<(), Box<dyn std::error::Error>> {
-        self.wait_for_ready().await;
-
-        info!("Waiting for rust-analyzer to complete workspace analysis...");
-
-        // rust-analyzer automatically analyzes the workspace after initialization
-        // We give it some time to complete the analysis, but we don't need to
-        // manually open files - rust-analyzer handles everything internally
-
-        // A short wait to let rust-analyzer do its initial workspace scan
-        tokio::time::sleep(Duration::from_millis(2000)).await;
-
-        info!("rust-analyzer workspace analysis should be complete. Ready to serve requests!");
-
-        Ok(())
-    }
 
     pub fn is_ready(&self) -> bool {
         self.is_ready.load(Ordering::Relaxed)
@@ -244,119 +226,6 @@ impl LspClient {
     pub async fn get_opened_documents_count(&self) -> usize {
         let opened_docs = self.opened_documents.lock().await;
         opened_docs.len()
-    }
-
-    /// Pre-warm the cache by opening all files matching the given glob patterns
-    /// Returns (files_opened, files_already_open, files_failed, duration)
-    pub async fn warm_cache_with_globs(
-        &self,
-        glob_patterns: &[String],
-    ) -> Result<(usize, usize, usize, Duration), Box<dyn std::error::Error>> {
-        self.wait_for_ready().await;
-
-        let start_time = Instant::now();
-        let mut all_files = Vec::new();
-
-        // Collect all files matching the glob patterns
-        for pattern in glob_patterns {
-            let abs_pattern = if Path::new(pattern).is_absolute() {
-                pattern.clone()
-            } else {
-                // Make pattern relative to workspace root
-                self.workspace_root
-                    .join(pattern)
-                    .to_string_lossy()
-                    .to_string()
-            };
-
-            debug!("Searching for files with pattern: {}", abs_pattern);
-
-            match glob::glob(&abs_pattern) {
-                Ok(paths) => {
-                    for entry in paths {
-                        match entry {
-                            Ok(path) => {
-                                if path.is_file() && is_rust_file(&path) {
-                                    all_files.push(path.to_string_lossy().to_string());
-                                }
-                            }
-                            Err(e) => warn!("Error reading glob entry: {}", e),
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Invalid glob pattern '{}': {}", abs_pattern, e);
-                }
-            }
-        }
-
-        info!("Found {} Rust files to warm cache with", all_files.len());
-
-        let mut files_opened = 0;
-        let mut files_already_open = 0;
-        let mut files_failed = 0;
-
-        // Open all collected files
-        for (i, file_path) in all_files.iter().enumerate() {
-            if i % 10 == 0 && i > 0 {
-                info!(
-                    "Cache warming progress: {}/{} files processed",
-                    i,
-                    all_files.len()
-                );
-            }
-
-            // Check if already open
-            {
-                let opened_docs = self.opened_documents.lock().await;
-                if opened_docs.contains(file_path) {
-                    files_already_open += 1;
-                    continue;
-                }
-            }
-
-            // Try to open the document
-            match self.open_document(file_path).await {
-                Ok(()) => {
-                    files_opened += 1;
-                    debug!("Warmed cache for: {}", file_path);
-                }
-                Err(e) => {
-                    files_failed += 1;
-                    warn!("Failed to warm cache for {}: {}", file_path, e);
-                }
-            }
-
-            // Small delay to avoid overwhelming rust-analyzer
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        let duration = start_time.elapsed();
-        info!(
-            "Cache warming completed: {} opened, {} already open, {} failed in {:?}",
-            files_opened, files_already_open, files_failed, duration
-        );
-
-        Ok((files_opened, files_already_open, files_failed, duration))
-    }
-
-    /// Pre-warm cache with common Rust project patterns
-    pub async fn warm_cache_rust_project(
-        &self,
-    ) -> Result<(usize, usize, usize, Duration), Box<dyn std::error::Error>> {
-        let default_patterns = vec![
-            "src/**/*.rs".to_string(),
-            "examples/**/*.rs".to_string(),
-            "tests/**/*.rs".to_string(),
-            "benches/**/*.rs".to_string(),
-            "build.rs".to_string(),
-        ];
-
-        info!(
-            "Warming cache for Rust project with default patterns: {:?}",
-            default_patterns
-        );
-        self.warm_cache_with_globs(&default_patterns).await
     }
 
     pub async fn hover(
@@ -941,15 +810,6 @@ impl Drop for LspClient {
     }
 }
 
-/// Helper function to check if a file is a Rust source file
-fn is_rust_file(path: &Path) -> bool {
-    if let Some(extension) = path.extension() {
-        extension == "rs"
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,54 +1302,6 @@ mod tests {
         // Test that it can be used in calculations
         let half_completion = MAX_COMPLETION_ITEMS / 2;
         assert_eq!(half_completion, 12);
-    }
-
-    #[test]
-    fn test_is_rust_file() {
-        use super::is_rust_file;
-        use std::path::Path;
-
-        // Test Rust files
-        assert!(is_rust_file(Path::new("main.rs")));
-        assert!(is_rust_file(Path::new("lib.rs")));
-        assert!(is_rust_file(Path::new("/path/to/file.rs")));
-        assert!(is_rust_file(Path::new("src/main.rs")));
-
-        // Test non-Rust files
-        assert!(!is_rust_file(Path::new("main.c")));
-        assert!(!is_rust_file(Path::new("README.md")));
-        assert!(!is_rust_file(Path::new("Cargo.toml")));
-        assert!(!is_rust_file(Path::new("file_without_extension")));
-        assert!(!is_rust_file(Path::new("")));
-
-        // Test edge cases
-        assert!(!is_rust_file(Path::new("rs"))); // No extension, just "rs"
-        assert!(is_rust_file(Path::new("file.name.rs"))); // Multiple dots
-        assert!(!is_rust_file(Path::new("file.rs.bak"))); // Extension is not "rs"
-    }
-
-    #[tokio::test]
-    async fn test_warm_cache_patterns() {
-        // Test default Rust patterns
-        let default_patterns = vec![
-            "src/**/*.rs".to_string(),
-            "examples/**/*.rs".to_string(),
-            "tests/**/*.rs".to_string(),
-            "benches/**/*.rs".to_string(),
-            "build.rs".to_string(),
-        ];
-
-        // Test that patterns are reasonable
-        assert!(default_patterns.len() > 0);
-        assert!(default_patterns.contains(&"src/**/*.rs".to_string()));
-        assert!(default_patterns.contains(&"build.rs".to_string()));
-
-        // Test pattern formats
-        for pattern in &default_patterns {
-            assert!(!pattern.is_empty());
-            // Most patterns should contain either ** or be specific files
-            assert!(pattern.contains("**") || !pattern.contains('/') || pattern == "build.rs");
-        }
     }
 
     #[tokio::test]
