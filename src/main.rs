@@ -11,6 +11,7 @@ use rmcp::{
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use sysinfo::System;
 use tokio::sync::Mutex;
 use tracing::{error, info};
@@ -170,6 +171,45 @@ fn default_use_rust_defaults() -> bool {
     true
 }
 
+#[derive(Debug, Clone)]
+pub enum WarmingState {
+    NotStarted,
+    InProgress,
+    Completed,
+    Failed(String),
+    Paused,
+}
+
+#[derive(Debug, Clone)]
+pub struct WarmingStatus {
+    pub state: WarmingState,
+    pub total_files: usize,
+    pub files_processed: usize,
+    pub files_opened: usize,
+    pub files_failed: usize,
+    pub start_time: Option<Instant>,
+    pub estimated_completion: Option<Instant>,
+}
+
+impl Default for WarmingStatus {
+    fn default() -> Self {
+        Self {
+            state: WarmingState::NotStarted,
+            total_files: 0,
+            files_processed: 0,
+            files_opened: 0,
+            files_failed: 0,
+            start_time: None,
+            estimated_completion: None,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct WarmingStatusRequest {
+    // No parameters needed - just returns status info
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "language-server-mcp")]
 #[command(about = "Rust-analyzer MCP server with smart cache warming")]
@@ -205,6 +245,7 @@ pub struct RustAnalyzerMCP {
     lsp_client: Arc<Mutex<LspClient>>,
     workspace_root: PathBuf,
     tool_router: ToolRouter<RustAnalyzerMCP>,
+    warming_status: Arc<Mutex<WarmingStatus>>,
 }
 
 #[tool_router]
@@ -220,6 +261,7 @@ impl RustAnalyzerMCP {
             lsp_client: Arc::new(Mutex::new(lsp_client)),
             workspace_root,
             tool_router: Self::tool_router(),
+            warming_status: Arc::new(Mutex::new(WarmingStatus::default())),
         })
     }
 
@@ -227,19 +269,85 @@ impl RustAnalyzerMCP {
         &self.workspace_root
     }
 
+    /// Get warming progress suffix for tool responses
+    async fn get_warming_progress_suffix(&self) -> String {
+        let status = self.warming_status.lock().await;
+        match &status.state {
+            WarmingState::InProgress => {
+                if status.total_files > 0 {
+                    let percentage =
+                        (status.files_processed as f64 / status.total_files as f64) * 100.0;
+                    let rate = if let Some(start_time) = status.start_time {
+                        let elapsed = start_time.elapsed();
+                        if elapsed.as_secs() > 0 {
+                            status.files_processed as f64 / elapsed.as_secs_f64()
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    };
+
+                    let eta = if rate > 0.0 && status.files_processed < status.total_files {
+                        let remaining_files = status.total_files - status.files_processed;
+                        let eta_secs = remaining_files as f64 / rate;
+                        if eta_secs < 60.0 {
+                            format!("~{:.0}s remaining", eta_secs)
+                        } else if eta_secs < 3600.0 {
+                            format!("~{:.0}m remaining", eta_secs / 60.0)
+                        } else {
+                            format!("~{:.1}h remaining", eta_secs / 3600.0)
+                        }
+                    } else {
+                        "calculating...".to_string()
+                    };
+
+                    format!(
+                        "\n\nCache warming: {}/{} files ({:.1}%) | {:.0} files/sec | {}",
+                        status.files_processed, status.total_files, percentage, rate, eta
+                    )
+                } else {
+                    "\n\nCache warming: initializing...".to_string()
+                }
+            }
+            WarmingState::Completed => {
+                if status.files_opened > 0 {
+                    format!(
+                        "\n\nCache warming: ✅ Completed ({} files warmed)",
+                        status.files_opened
+                    )
+                } else {
+                    String::new()
+                }
+            }
+            WarmingState::Failed(error) => {
+                format!("\n\nCache warming: ❌ Failed ({})", error)
+            }
+            WarmingState::Paused => {
+                format!(
+                    "\n\nCache warming: ⏸️  Paused ({}/{} files)",
+                    status.files_processed, status.total_files
+                )
+            }
+            WarmingState::NotStarted => String::new(),
+        }
+    }
+
     #[tool(description = "Get type information and documentation at a specific position")]
     async fn hover(
         &self,
         Parameters(request): Parameters<HoverRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = self.lsp_client.lock().await;
+        let content = {
+            let result = {
+                let lsp_client = self.lsp_client.lock().await;
+                lsp_client
+                    .hover(&request.file_path, request.line, request.column)
+                    .await
+            };
 
-        match lsp_client
-            .hover(&request.file_path, request.line, request.column)
-            .await
-        {
-            Ok(Some(hover)) => {
-                let content = match hover.contents {
+            match result {
+                Ok(Some(hover)) => match hover.contents {
                     lsp_types::HoverContents::Markup(markup) => markup.value,
                     lsp_types::HoverContents::Array(markups) => markups
                         .into_iter()
@@ -253,14 +361,17 @@ impl RustAnalyzerMCP {
                         lsp_types::MarkedString::String(s) => s,
                         lsp_types::MarkedString::LanguageString(ls) => ls.value,
                     },
-                };
-                Ok(CallToolResult::success(vec![Content::text(content)]))
+                },
+                Ok(None) => "No hover information available".to_string(),
+                Err(e) => return Err(McpError::internal_error(format!("LSP error: {}", e), None)),
             }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
-                "No hover information available",
-            )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
-        }
+        };
+
+        let progress_suffix = self.get_warming_progress_suffix().await;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}{}",
+            content, progress_suffix
+        ))]))
     }
 
     #[tool(description = "Get code completions at a specific position")]
@@ -268,50 +379,55 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<CompletionRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = self.lsp_client.lock().await;
+        let content = {
+            let result = {
+                let lsp_client = self.lsp_client.lock().await;
+                lsp_client
+                    .completion(&request.file_path, request.line, request.column)
+                    .await
+            };
 
-        match lsp_client
-            .completion(&request.file_path, request.line, request.column)
-            .await
-        {
-            Ok(Some(result)) => {
-                let completions = match result {
-                    lsp_types::CompletionResponse::Array(items) => items,
-                    lsp_types::CompletionResponse::List(list) => list.items,
-                };
+            match result {
+                Ok(Some(result)) => {
+                    let completions = match result {
+                        lsp_types::CompletionResponse::Array(items) => items,
+                        lsp_types::CompletionResponse::List(list) => list.items,
+                    };
 
-                let completion_text = completions
-                    .into_iter()
-                    .take(MAX_COMPLETION_ITEMS) // Limit for readability and performance
-                    .map(|item| {
-                        let detail = item.detail.unwrap_or_default();
-                        let doc = item
-                            .documentation
-                            .map(|d| match d {
-                                lsp_types::Documentation::String(s) => s,
-                                lsp_types::Documentation::MarkupContent(mc) => mc.value,
-                            })
-                            .unwrap_or_default();
+                    let completion_text = completions
+                        .into_iter()
+                        .take(MAX_COMPLETION_ITEMS) // Limit for readability and performance
+                        .map(|item| {
+                            let detail = item.detail.unwrap_or_default();
+                            let doc = item
+                                .documentation
+                                .map(|d| match d {
+                                    lsp_types::Documentation::String(s) => s,
+                                    lsp_types::Documentation::MarkupContent(mc) => mc.value,
+                                })
+                                .unwrap_or_default();
 
-                        if doc.is_empty() {
-                            format!("- {}: {}", item.label, detail)
-                        } else {
-                            format!("- {}: {} - {}", item.label, detail, doc)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                            if doc.is_empty() {
+                                format!("- {}: {}", item.label, detail)
+                            } else {
+                                format!("- {}: {} - {}", item.label, detail, doc)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
 
-                Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Completions:\n{}",
-                    completion_text
-                ))]))
+                    format!("Completions:\n{}", completion_text)
+                }
+                Ok(None) => "No completions available".to_string(),
+                Err(e) => return Err(McpError::internal_error(format!("LSP error: {}", e), None)),
             }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
-                "No completions available",
-            )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
-        }
+        };
+
+        let progress_suffix = self.get_warming_progress_suffix().await;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}{}",
+            content, progress_suffix
+        ))]))
     }
 
     #[tool(description = "Get compile errors and warnings for a file")]
@@ -319,48 +435,54 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<DiagnosticsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = self.lsp_client.lock().await;
+        let content = {
+            let result = {
+                let lsp_client = self.lsp_client.lock().await;
+                lsp_client.diagnostics(&request.file_path).await
+            };
 
-        match lsp_client.diagnostics(&request.file_path).await {
-            Ok(diagnostics) => {
-                if diagnostics.is_empty() {
-                    Ok(CallToolResult::success(vec![Content::text(
-                        "No diagnostics found",
-                    )]))
-                } else {
-                    let diagnostic_text = diagnostics
-                        .into_iter()
-                        .map(|diag| {
-                            let severity = diag
-                                .severity
-                                .map(|s| format!("{:?}", s))
-                                .unwrap_or("Info".to_string());
-                            let range = format!(
-                                "{}:{}-{}:{}",
-                                diag.range.start.line,
-                                diag.range.start.character,
-                                diag.range.end.line,
-                                diag.range.end.character
-                            );
-                            format!(
-                                "[{}] {}: {} ({})",
-                                severity,
-                                range,
-                                diag.message,
-                                diag.source.unwrap_or_default()
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
+            match result {
+                Ok(diagnostics) => {
+                    if diagnostics.is_empty() {
+                        "No diagnostics found".to_string()
+                    } else {
+                        let diagnostic_text = diagnostics
+                            .into_iter()
+                            .map(|diag| {
+                                let severity = diag
+                                    .severity
+                                    .map(|s| format!("{:?}", s))
+                                    .unwrap_or("Info".to_string());
+                                let range = format!(
+                                    "{}:{}-{}:{}",
+                                    diag.range.start.line,
+                                    diag.range.start.character,
+                                    diag.range.end.line,
+                                    diag.range.end.character
+                                );
+                                format!(
+                                    "[{}] {}: {} ({})",
+                                    severity,
+                                    range,
+                                    diag.message,
+                                    diag.source.unwrap_or_default()
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
 
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Diagnostics:\n{}",
-                        diagnostic_text
-                    ))]))
+                        format!("Diagnostics:\n{}", diagnostic_text)
+                    }
                 }
+                Err(e) => return Err(McpError::internal_error(format!("LSP error: {}", e), None)),
             }
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {}", e), None)),
-        }
+        };
+
+        let progress_suffix = self.get_warming_progress_suffix().await;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{}{}",
+            content, progress_suffix
+        ))]))
     }
 
     #[tool(description = "Find definition of symbol at position")]
@@ -1456,6 +1578,112 @@ impl RustAnalyzerMCP {
         }
     }
 
+    #[tool(description = "Get cache warming status and progress")]
+    async fn warming_status(
+        &self,
+        Parameters(_request): Parameters<WarmingStatusRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let status = self.warming_status.lock().await;
+        let status_clone = status.clone();
+        drop(status);
+
+        let mut response_lines = vec![format!("Cache Warming Status: {:?}", status_clone.state)];
+
+        match &status_clone.state {
+            WarmingState::NotStarted => {
+                response_lines.push("Cache warming has not been started yet.".to_string());
+            }
+            WarmingState::InProgress => {
+                response_lines.extend(vec![
+                    format!("📂 Total files to process: {}", status_clone.total_files),
+                    format!("✅ Files processed: {}", status_clone.files_processed),
+                    format!("🆕 Files newly opened: {}", status_clone.files_opened),
+                ]);
+
+                if status_clone.files_failed > 0 {
+                    response_lines.push(format!("❌ Files failed: {}", status_clone.files_failed));
+                }
+
+                if status_clone.total_files > 0 {
+                    let percentage = (status_clone.files_processed as f64
+                        / status_clone.total_files as f64)
+                        * 100.0;
+                    response_lines.push(format!("📊 Progress: {:.1}%", percentage));
+                }
+
+                if let Some(start_time) = status_clone.start_time {
+                    let elapsed = start_time.elapsed();
+                    response_lines.push(format!("⏱️  Elapsed time: {:.1}s", elapsed.as_secs_f64()));
+
+                    if elapsed.as_secs() > 0 {
+                        let rate = status_clone.files_processed as f64 / elapsed.as_secs_f64();
+                        response_lines.push(format!("🚀 Processing rate: {:.1} files/sec", rate));
+
+                        if rate > 0.0 && status_clone.files_processed < status_clone.total_files {
+                            let remaining_files =
+                                status_clone.total_files - status_clone.files_processed;
+                            let eta_secs = remaining_files as f64 / rate;
+                            let eta_str = if eta_secs < 60.0 {
+                                format!("{:.0}s", eta_secs)
+                            } else if eta_secs < 3600.0 {
+                                format!("{:.0}m", eta_secs / 60.0)
+                            } else {
+                                format!("{:.1}h", eta_secs / 3600.0)
+                            };
+                            response_lines.push(format!("⏳ Estimated completion: ~{}", eta_str));
+                        }
+                    }
+                }
+            }
+            WarmingState::Completed => {
+                response_lines.extend(vec![
+                    format!("📂 Total files processed: {}", status_clone.total_files),
+                    format!(
+                        "✅ Files successfully opened: {}",
+                        status_clone.files_opened
+                    ),
+                ]);
+
+                if status_clone.files_failed > 0 {
+                    response_lines.push(format!("❌ Files failed: {}", status_clone.files_failed));
+                }
+
+                if let Some(start_time) = status_clone.start_time {
+                    let elapsed = start_time.elapsed();
+                    response_lines.push(format!("⏱️  Total time: {:.1}s", elapsed.as_secs_f64()));
+                }
+
+                response_lines.push(
+                    "🚀 rust-analyzer cache is now warmed - operations will be faster!".to_string(),
+                );
+            }
+            WarmingState::Failed(error) => {
+                response_lines.push(format!("Error: {}", error));
+                if status_clone.files_processed > 0 {
+                    response_lines.push(format!(
+                        "Files processed before failure: {}",
+                        status_clone.files_processed
+                    ));
+                }
+            }
+            WarmingState::Paused => {
+                response_lines.extend(vec![
+                    format!("📂 Total files: {}", status_clone.total_files),
+                    format!("✅ Files processed: {}", status_clone.files_processed),
+                    format!("🆕 Files opened: {}", status_clone.files_opened),
+                ]);
+                if status_clone.files_failed > 0 {
+                    response_lines.push(format!("❌ Files failed: {}", status_clone.files_failed));
+                }
+                response_lines.push("Use warming controls to resume or restart.".to_string());
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(
+            response_lines.join("\n"),
+        )]))
+    }
+
     #[tool(
         description = "Pre-warm rust-analyzer cache by opening files matching glob patterns for faster subsequent operations"
     )]
@@ -1623,16 +1851,50 @@ fn should_auto_warm(workspace_root: &PathBuf, memory_limit: u64) -> bool {
     total_files > 0 && memory_usage_within_limit
 }
 
-async fn perform_auto_warming(
-    lsp_client: &mut LspClient,
-    _workspace_root: &PathBuf,
+/// Spawn background warming task that runs concurrently with MCP service
+async fn spawn_background_warming(
+    lsp_client: Arc<Mutex<LspClient>>,
+    warming_status: Arc<Mutex<WarmingStatus>>,
+    workspace_root: PathBuf,
+    warm_all: bool,
+    show_progress: bool,
+    memory_limit: u64,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if let Err(e) = perform_background_warming(
+            lsp_client,
+            warming_status,
+            workspace_root,
+            warm_all,
+            show_progress,
+            memory_limit,
+        )
+        .await
+        {
+            error!("Background warming failed: {}", e);
+        }
+    })
+}
+
+/// Perform background warming with progress tracking
+async fn perform_background_warming(
+    lsp_client: Arc<Mutex<LspClient>>,
+    warming_status: Arc<Mutex<WarmingStatus>>,
+    _workspace_root: PathBuf,
     warm_all: bool,
     show_progress: bool,
     memory_limit: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Update status to InProgress
+    {
+        let mut status = warming_status.lock().await;
+        status.state = WarmingState::InProgress;
+        status.start_time = Some(Instant::now());
+    }
+
     if show_progress {
         eprintln!(
-            "🔥 Starting auto-warm with memory limit: {}MB",
+            "🔥 Starting background cache warming with memory limit: {}MB",
             memory_limit / (1024 * 1024)
         );
     }
@@ -1651,40 +1913,145 @@ async fn perform_auto_warming(
         ]
     };
 
-    if show_progress {
-        eprintln!("📂 Scanning for Rust files...");
-    }
+    // Collect files without holding LSP client lock
+    let mut all_files = Vec::new();
+    for pattern in &patterns {
+        let abs_pattern = if std::path::Path::new(pattern).is_absolute() {
+            pattern.clone()
+        } else {
+            _workspace_root.join(pattern).to_string_lossy().to_string()
+        };
 
-    let start_time = std::time::Instant::now();
-    let result = lsp_client.warm_cache_with_globs(&patterns).await;
-    let duration = start_time.elapsed();
-
-    match result {
-        Ok((files_opened, files_already_open, files_failed, _)) => {
-            let total_files = files_opened + files_already_open + files_failed;
-
-            if show_progress || files_opened > 0 {
-                eprintln!("✅ Auto-warm completed in {:.1}s:", duration.as_secs_f64());
-                eprintln!("   📂 {} files processed", total_files);
-                eprintln!("   🆕 {} newly opened", files_opened);
-                if files_already_open > 0 {
-                    eprintln!("   🔄 {} already open", files_already_open);
-                }
-                if files_failed > 0 {
-                    eprintln!("   ❌ {} failed to open", files_failed);
-                }
-                if files_opened > 0 {
-                    eprintln!("   🚀 rust-analyzer cache is warmed - operations will be faster!");
+        if let Ok(paths) = glob::glob(&abs_pattern) {
+            for entry in paths {
+                if let Ok(path) = entry {
+                    if path.is_file() && path.extension().map_or(false, |ext| ext == "rs") {
+                        all_files.push(path.to_string_lossy().to_string());
+                    }
                 }
             }
-
-            Ok(())
-        }
-        Err(e) => {
-            eprintln!("⚠️  Auto-warm failed: {}", e);
-            Ok(()) // Don't fail server startup on auto-warm failure
         }
     }
+
+    if show_progress {
+        eprintln!("📂 Found {} Rust files to warm", all_files.len());
+    }
+
+    // Update total file count
+    {
+        let mut status = warming_status.lock().await;
+        status.total_files = all_files.len();
+    }
+
+    let mut files_opened = 0;
+    let mut files_already_open = 0;
+    let mut files_failed = 0;
+
+    // Process files in chunks to avoid holding the lock too long
+    for chunk in all_files.chunks(10) {
+        let mut chunk_results = Vec::new();
+
+        {
+            let lsp_client_guard = lsp_client.lock().await;
+            for file_path in chunk {
+                // Check if already open
+                if lsp_client_guard.is_document_open(file_path).await {
+                    chunk_results.push((file_path.clone(), "already_open".to_string()));
+                    continue;
+                }
+
+                // Try to open the document with a shorter timeout for background operations
+                match tokio::time::timeout(
+                    Duration::from_secs(5),
+                    lsp_client_guard.open_document(file_path),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {
+                        chunk_results.push((file_path.clone(), "opened".to_string()));
+                    }
+                    Ok(Err(e)) => {
+                        chunk_results.push((file_path.clone(), format!("failed: {}", e)));
+                    }
+                    Err(_) => {
+                        chunk_results.push((file_path.clone(), "timeout".to_string()));
+                    }
+                }
+            }
+        } // Release LSP client lock
+
+        // Process results and update counters
+        for (file_path, result) in chunk_results {
+            match result.as_str() {
+                "opened" => {
+                    files_opened += 1;
+                    if show_progress && files_opened % 50 == 0 {
+                        eprintln!("🔥 Warmed {} files so far...", files_opened);
+                    }
+                }
+                "already_open" => files_already_open += 1,
+                _ if result.starts_with("failed") || result == "timeout" => {
+                    files_failed += 1;
+                    if show_progress {
+                        eprintln!("⚠️  Failed to warm {}: {}", file_path, result);
+                    }
+                }
+                _ => {}
+            }
+
+            // Update progress
+            {
+                let mut status = warming_status.lock().await;
+                status.files_processed += 1;
+                status.files_opened = files_opened;
+                status.files_failed = files_failed;
+            }
+        }
+
+        // Yield control between chunks to allow other operations
+        tokio::task::yield_now().await;
+
+        // Small delay to avoid overwhelming rust-analyzer
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let total_files = files_opened + files_already_open + files_failed;
+
+    // Update final status
+    {
+        let mut status = warming_status.lock().await;
+        status.state = WarmingState::Completed;
+        status.files_processed = total_files;
+        status.files_opened = files_opened;
+        status.files_failed = files_failed;
+    }
+
+    if show_progress || files_opened > 0 {
+        let duration = Instant::now().duration_since(
+            warming_status
+                .lock()
+                .await
+                .start_time
+                .unwrap_or_else(Instant::now),
+        );
+        eprintln!(
+            "✅ Background warming completed in {:.1}s:",
+            duration.as_secs_f64()
+        );
+        eprintln!("   📂 {} files processed", total_files);
+        eprintln!("   🆕 {} newly opened", files_opened);
+        if files_already_open > 0 {
+            eprintln!("   🔄 {} already open", files_already_open);
+        }
+        if files_failed > 0 {
+            eprintln!("   ❌ {} failed to open", files_failed);
+        }
+        if files_opened > 0 {
+            eprintln!("   🚀 rust-analyzer cache is warmed - operations will be faster!");
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -1711,33 +2078,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create the MCP service
     let mcp_service = RustAnalyzerMCP::new(workspace_root.clone()).await?;
 
-    // Perform auto-warming if enabled
-    if !args.no_auto_warm {
+    // Start background warming if enabled (NON-BLOCKING!)
+    let _warming_handle = if !args.no_auto_warm {
         if args.warm_all || should_auto_warm(&workspace_root, memory_limit) {
-            let lsp_client = Arc::clone(&mcp_service.lsp_client);
-            let mut client_guard = lsp_client.lock().await;
-
-            perform_auto_warming(
-                &mut *client_guard,
-                &workspace_root,
-                args.warm_all,
-                args.show_progress,
-                memory_limit,
+            Some(
+                spawn_background_warming(
+                    Arc::clone(&mcp_service.lsp_client),
+                    Arc::clone(&mcp_service.warming_status),
+                    workspace_root.clone(),
+                    args.warm_all,
+                    args.show_progress,
+                    memory_limit,
+                )
+                .await,
             )
-            .await?;
-
-            drop(client_guard); // Release the lock
-        } else if args.show_progress {
-            eprintln!(
-                "ℹ️  Auto-warm skipped: project too large for memory limit ({}MB)",
-                memory_limit / (1024 * 1024)
-            );
-            eprintln!("   Use --warm-all to force warming or --max-memory to increase limit");
+        } else {
+            if args.show_progress {
+                eprintln!(
+                    "ℹ️  Auto-warm skipped: project too large for memory limit ({}MB)",
+                    memory_limit / (1024 * 1024)
+                );
+                eprintln!("   Use --warm-all to force warming or --max-memory to increase limit");
+            }
+            None
         }
-    } else if args.show_progress {
-        eprintln!("ℹ️  Auto-warm disabled via --no-auto-warm");
-    }
+    } else {
+        if args.show_progress {
+            eprintln!("ℹ️  Auto-warm disabled via --no-auto-warm");
+        }
+        None
+    };
 
+    // Start MCP service immediately - server will be responsive right away
     let service = mcp_service.serve(stdio()).await.inspect_err(|e| {
         error!("serving error: {:?}", e);
     })?;

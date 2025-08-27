@@ -211,6 +211,11 @@ impl LspClient {
         opened_docs.len()
     }
 
+    pub async fn is_document_open(&self, file_path: &str) -> bool {
+        let opened_docs = self.opened_documents.lock().await;
+        opened_docs.contains(file_path)
+    }
+
     /// Pre-warm the cache by opening all files matching the given glob patterns
     /// Returns (files_opened, files_already_open, files_failed, duration)
     pub async fn warm_cache_with_globs(
