@@ -75,6 +75,13 @@ impl LspClient {
     pub async fn new(workspace_root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         info!("Starting rust-analyzer process");
 
+        // Ensure workspace_root is absolute
+        let workspace_root = if workspace_root.is_absolute() {
+            workspace_root.to_path_buf()
+        } else {
+            std::env::current_dir()?.join(workspace_root)
+        };
+
         let mut process = Command::new("rust-analyzer")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -92,7 +99,7 @@ impl LspClient {
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(stdout),
             request_id: Mutex::new(0),
-            workspace_root: workspace_root.to_path_buf(),
+            workspace_root,
             is_ready: Arc::new(AtomicBool::new(false)),
             opened_documents: Mutex::new(HashSet::new()),
             timeout_secs: get_timeout_secs(),

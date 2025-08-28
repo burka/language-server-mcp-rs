@@ -3,6 +3,18 @@ name = "test-examples"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+anyhow = "1"
+rmcp = { version = "0.6.0", features = ["server", "client", "transport-io", "transport-child-process"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
 [[bin]]
 name = "test_file"
 path = "test_file.rs"
+
+[[bin]]
+name = "client"
+path = "client.rs"

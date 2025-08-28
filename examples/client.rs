@@ -23,6 +23,8 @@ async fn main() -> Result<()> {
 
     // Start our rust-analyzer MCP server
     let server_path = std::env::current_dir()?
+        .parent()
+        .unwrap()
         .join("target")
         .join("debug")
         .join("language-server-mcp");
