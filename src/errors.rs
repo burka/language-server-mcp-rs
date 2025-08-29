@@ -11,6 +11,7 @@ pub enum LspError {
     CommunicationError(String),
     TimeoutError(String),
     ProcessTerminated,
+    InitializationInProgress(String), // New: for rust-analyzer still initializing
     Other(String),
 }
 
@@ -56,12 +57,49 @@ impl std::fmt::Display for LspError {
                 "rust-analyzer process terminated unexpectedly.\n\
                 This may be due to memory issues or internal errors in rust-analyzer."
             ),
+            LspError::InitializationInProgress(operation) => write!(
+                f,
+                "rust-analyzer is still initializing, operation '{}' was cancelled.\n\
+                This typically takes 0.5-2 seconds. The request will be automatically retried.",
+                operation
+            ),
             LspError::Other(msg) => write!(f, "rust-analyzer error: {}", msg),
         }
     }
 }
 
 impl std::error::Error for LspError {}
+
+impl LspError {
+    /// Check if this error indicates rust-analyzer is still initializing
+    pub fn is_initialization_error(&self) -> bool {
+        match self {
+            LspError::InitializationInProgress(_) => true,
+            LspError::CommunicationError(msg) | LspError::Other(msg) => {
+                // Detect specific initialization error patterns from our tests
+                msg.contains("server cancelled the request") ||
+                msg.contains("-32802") ||
+                msg.contains("retriggerRequest") ||
+                (msg.contains("-32603") && msg.contains("LSP error"))
+            },
+            _ => false,
+        }
+    }
+
+    /// Convert LSP JSON-RPC errors to initialization errors when appropriate
+    pub fn from_lsp_error(msg: String, method: &str) -> Self {
+        if msg.contains("server cancelled the request") || 
+           msg.contains("-32802") ||
+           msg.contains("retriggerRequest") {
+            LspError::InitializationInProgress(method.to_string())
+        } else if msg.contains("-32603") {
+            // Generic LSP error - could be initialization related
+            LspError::CommunicationError(format!("LSP error: {}", msg))
+        } else {
+            LspError::Other(msg)
+        }
+    }
+}
 
 impl From<std::io::Error> for LspError {
     fn from(error: std::io::Error) -> Self {
