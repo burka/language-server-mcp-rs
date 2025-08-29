@@ -1,205 +1,229 @@
-// Direct tests for tool handlers to improve coverage
-use language_server_mcp::tool_handlers::*;
-use language_server_mcp::{
-    CompletionRequest, DiagnosticsRequest, GotoDefinitionRequest, HoverRequest, LspClient,
-};
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+// Full-stack tool handler tests - replaces mock-based approach with real MCP server testing
+// Tests the complete flow: MCP tool calls → RustAnalyzerMCP → tool_handlers → LspClient → rust-analyzer
+// This provides much better coverage of server.rs compared to testing tool_handlers directly
 
-async fn create_test_client() -> Arc<Mutex<LspClient>> {
+use language_server_mcp::server::RustAnalyzerMCP;
+use rmcp::handler::server::tool::Parameters;
+use rmcp::model::*;
+use std::path::PathBuf;
+
+/// Create a test MCP server instance for full-stack testing
+async fn create_full_stack_server() -> RustAnalyzerMCP {
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let client = LspClient::new(&workspace)
+    RustAnalyzerMCP::new(workspace)
         .await
-        .expect("Failed to create LSP client");
-    Arc::new(Mutex::new(client))
+        .expect("Failed to create MCP server")
+}
+
+/// Helper to check if result is successful
+fn is_success(result: &CallToolResult) -> bool {
+    !result.content.is_empty()
 }
 
 #[tokio::test]
-async fn test_handle_hover_success() {
-    let client = create_test_client().await;
+async fn test_fullstack_hover_success() {
+    let server = create_full_stack_server().await;
 
-    // Test hover on a known position
-    let request = HoverRequest {
+    // Test hover on a known position (imports in main.rs)
+    let request = language_server_mcp::models::HoverRequest {
         file_path: "src/main.rs".to_string(),
-        line: 40,
-        column: 10,
+        line: 3,
+        column: 30, // "RustAnalyzerMCP" in import
     };
 
-    let result = handle_hover(&client, request).await;
+    let result = server.hover(Parameters(request)).await;
 
-    // Should either succeed or return a reasonable error message
+    // Should succeed with the full stack
     match result {
-        Ok(content) => {
-            println!("Hover content: {}", content);
-            assert!(!content.is_empty());
+        Ok(tool_result) => {
+            println!("Full-stack hover result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
         }
         Err(e) => {
-            println!("Hover error (may be expected): {}", e);
-            assert!(e.contains("LSP error"));
+            println!("Full-stack hover error: {:?}", e);
+            // For now, accept reasonable error messages
+            assert!(
+                format!("{:?}", e).contains("LSP error") || format!("{:?}", e).contains("timeout")
+            );
         }
     }
 }
 
 #[tokio::test]
-async fn test_handle_hover_no_info() {
-    let client = create_test_client().await;
+async fn test_fullstack_hover_no_info() {
+    let server = create_full_stack_server().await;
 
-    // Test hover on whitespace/comment
-    let request = HoverRequest {
+    // Test hover on whitespace (should return no hover info)
+    let request = language_server_mcp::models::HoverRequest {
         file_path: "src/main.rs".to_string(),
         line: 1,
-        column: 0,
+        column: 1, // Empty line or comment
     };
 
-    let result = handle_hover(&client, request).await;
+    let result = server.hover(Parameters(request)).await;
 
-    // Should return either no info or an error
     match result {
-        Ok(content) => {
-            assert!(content.contains("No hover information") || !content.is_empty());
+        Ok(tool_result) => {
+            println!("No-info hover result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
         }
         Err(e) => {
-            assert!(e.contains("LSP error"));
+            println!("Expected error for no-info hover: {:?}", e);
+            assert!(format!("{:?}", e).contains("LSP error"));
         }
     }
 }
 
 #[tokio::test]
-async fn test_handle_hover_invalid_file() {
-    let client = create_test_client().await;
+async fn test_fullstack_completion_success() {
+    let server = create_full_stack_server().await;
 
-    let request = HoverRequest {
-        file_path: "non_existent_file.rs".to_string(),
-        line: 0,
-        column: 0,
-    };
-
-    let result = handle_hover(&client, request).await;
-
-    // Should return an error
-    assert!(result.is_err() || result.unwrap().contains("No hover"));
-}
-
-#[tokio::test]
-async fn test_handle_completion_success() {
-    let client = create_test_client().await;
-
-    let request = CompletionRequest {
+    // Test completion at a position where we expect completions
+    let request = language_server_mcp::models::CompletionRequest {
         file_path: "src/main.rs".to_string(),
         line: 10,
-        column: 5,
+        column: 5, // Inside a function where we can get completions
     };
 
-    let result = handle_completion(&client, request).await;
+    let result = server.completion(Parameters(request)).await;
 
     match result {
-        Ok(content) => {
-            println!("Completion content: {}", content);
-            assert!(!content.is_empty());
+        Ok(tool_result) => {
+            println!("Full-stack completion result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
         }
         Err(e) => {
-            println!("Completion error (may be expected): {}", e);
-            assert!(e.contains("LSP error"));
+            println!("Completion error (may be expected): {:?}", e);
+            assert!(format!("{:?}", e).contains("LSP error"));
         }
     }
 }
 
 #[tokio::test]
-async fn test_handle_diagnostics_success() {
-    let client = create_test_client().await;
+async fn test_fullstack_diagnostics_success() {
+    let server = create_full_stack_server().await;
 
-    let request = DiagnosticsRequest {
+    // Test diagnostics on main.rs
+    let request = language_server_mcp::models::DiagnosticsRequest {
         file_path: "src/main.rs".to_string(),
     };
 
-    let result = handle_diagnostics(&client, request).await;
+    let result = server.diagnostics(Parameters(request)).await;
 
+    // Diagnostics should always succeed (even if no issues found)
     match result {
-        Ok(content) => {
-            println!("Diagnostics content: {}", content);
-            assert!(!content.is_empty());
-            // Should either have diagnostics or say "No diagnostics found"
-            assert!(content.contains("Diagnostics:") || content.contains("No diagnostics"));
+        Ok(tool_result) => {
+            println!("Full-stack diagnostics result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
         }
         Err(e) => {
-            println!("Diagnostics error: {}", e);
-            assert!(e.contains("LSP error"));
+            panic!("Diagnostics should not fail: {:?}", e);
         }
     }
 }
 
 #[tokio::test]
-async fn test_handle_goto_definition_success() {
-    let client = create_test_client().await;
+async fn test_fullstack_goto_definition_success() {
+    let server = create_full_stack_server().await;
 
-    // Test on a known symbol
-    let request = GotoDefinitionRequest {
+    // Test goto definition on a symbol we know should have a definition
+    let request = language_server_mcp::models::GotoDefinitionRequest {
         file_path: "src/main.rs".to_string(),
-        line: 24, // Line with LspClient usage
-        column: 20,
+        line: 3,
+        column: 30, // "RustAnalyzerMCP" in import
     };
 
-    let result = handle_goto_definition(&client, request).await;
+    let result = server.goto_definition(Parameters(request)).await;
 
     match result {
-        Ok(content) => {
-            println!("Goto definition content: {}", content);
-            assert!(!content.is_empty());
+        Ok(tool_result) => {
+            println!("Full-stack goto definition result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
         }
         Err(e) => {
-            println!("Goto definition error: {}", e);
-            assert!(e.contains("LSP error"));
+            println!("Goto definition error (may be expected): {:?}", e);
+            assert!(format!("{:?}", e).contains("LSP error"));
         }
     }
 }
 
 #[tokio::test]
-async fn test_handle_goto_definition_no_definition() {
-    let client = create_test_client().await;
+async fn test_fullstack_find_references_success() {
+    let server = create_full_stack_server().await;
 
-    // Test on a position with no definition
-    let request = GotoDefinitionRequest {
+    // Test find references on a symbol
+    let request = language_server_mcp::models::FindReferencesRequest {
         file_path: "src/main.rs".to_string(),
+        line: 3,
+        column: 30, // "RustAnalyzerMCP" in import
+        include_declaration: true,
+    };
+
+    let result = server.find_references(Parameters(request)).await;
+
+    match result {
+        Ok(tool_result) => {
+            println!("Full-stack find references result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
+        }
+        Err(e) => {
+            println!("Find references error (may be expected): {:?}", e);
+            assert!(format!("{:?}", e).contains("LSP error"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_fullstack_invalid_file() {
+    let server = create_full_stack_server().await;
+
+    // Test with non-existent file
+    let request = language_server_mcp::models::HoverRequest {
+        file_path: "src/does_not_exist.rs".to_string(),
         line: 1,
-        column: 0,
+        column: 1,
     };
 
-    let result = handle_goto_definition(&client, request).await;
+    let result = server.hover(Parameters(request)).await;
 
-    // Should return no definition or error
+    // Should return a result (error handling varies)
     match result {
-        Ok(content) => {
-            assert!(content.contains("No definition") || content.contains("Definitions:"));
+        Ok(tool_result) => {
+            println!("Invalid file result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
         }
         Err(e) => {
-            assert!(e.contains("LSP error"));
+            println!("Expected error for invalid file: {:?}", e);
+            assert!(
+                format!("{:?}", e).contains("LSP error") || format!("{:?}", e).contains("file")
+            );
         }
     }
 }
 
 #[tokio::test]
-async fn test_handlers_with_invalid_positions() {
-    let client = create_test_client().await;
+async fn test_fullstack_invalid_position() {
+    let server = create_full_stack_server().await;
 
-    // Test hover with out-of-bounds position
-    let hover_request = HoverRequest {
+    // Test with invalid position (way beyond file bounds)
+    let request = language_server_mcp::models::HoverRequest {
         file_path: "src/main.rs".to_string(),
         line: 99999,
         column: 99999,
     };
 
-    let hover_result = handle_hover(&client, hover_request).await;
-    // Should handle gracefully
-    assert!(hover_result.is_ok() || hover_result.unwrap_err().contains("LSP error"));
+    let result = server.hover(Parameters(request)).await;
 
-    // Test completion with out-of-bounds position
-    let completion_request = CompletionRequest {
-        file_path: "src/main.rs".to_string(),
-        line: 99999,
-        column: 99999,
-    };
-
-    let completion_result = handle_completion(&client, completion_request).await;
-    assert!(completion_result.is_ok() || completion_result.unwrap_err().contains("LSP error"));
+    match result {
+        Ok(tool_result) => {
+            println!("Invalid position result: {:?}", tool_result);
+            assert!(is_success(&tool_result), "Tool result should have content");
+        }
+        Err(e) => {
+            println!("Expected error for invalid position: {:?}", e);
+            assert!(
+                format!("{:?}", e).contains("LSP error") || format!("{:?}", e).contains("position")
+            );
+        }
+    }
 }

@@ -50,7 +50,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get type information and documentation at a specific position")]
-    async fn hover(
+    pub async fn hover(
         &self,
         Parameters(request): Parameters<HoverRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -61,7 +61,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get code completions at a specific position")]
-    async fn completion(
+    pub async fn completion(
         &self,
         Parameters(request): Parameters<CompletionRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -72,7 +72,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get compile errors and warnings for a file")]
-    async fn diagnostics(
+    pub async fn diagnostics(
         &self,
         Parameters(request): Parameters<DiagnosticsRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -83,7 +83,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Find definition of symbol at position")]
-    async fn goto_definition(
+    pub async fn goto_definition(
         &self,
         Parameters(request): Parameters<GotoDefinitionRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -94,7 +94,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Find all references to symbol at position")]
-    async fn find_references(
+    pub async fn find_references(
         &self,
         Parameters(request): Parameters<FindReferencesRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -145,7 +145,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Format Rust code")]
-    async fn format_document(
+    pub async fn format_document(
         &self,
         Parameters(request): Parameters<FormatRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -177,7 +177,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Rename symbols across the entire workspace safely")]
-    async fn rename(
+    pub async fn rename(
         &self,
         Parameters(request): Parameters<RenameRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -276,7 +276,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get available quick fixes and refactorings")]
-    async fn code_actions(
+    pub async fn code_actions(
         &self,
         Parameters(request): Parameters<CodeActionsRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -374,7 +374,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Search for symbols across entire workspace")]
-    async fn workspace_symbols(
+    pub async fn workspace_symbols(
         &self,
         Parameters(request): Parameters<WorkspaceSymbolsRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -430,7 +430,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get type and parameter hints")]
-    async fn inlay_hints(
+    pub async fn inlay_hints(
         &self,
         Parameters(request): Parameters<InlayHintsRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -482,7 +482,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Expand Rust macros to see generated code")]
-    async fn expand_macro(
+    pub async fn expand_macro(
         &self,
         Parameters(request): Parameters<ExpandMacroRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -529,7 +529,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get document structure and symbols for code analysis")]
-    async fn document_symbols(
+    pub async fn document_symbols(
         &self,
         Parameters(request): Parameters<DocumentSymbolsRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -685,7 +685,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get function signature help for parameter assistance")]
-    async fn signature_help(
+    pub async fn signature_help(
         &self,
         Parameters(request): Parameters<SignatureHelpRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -761,7 +761,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Highlight all occurrences of symbol at position")]
-    async fn document_highlight(
+    pub async fn document_highlight(
         &self,
         Parameters(request): Parameters<DocumentHighlightRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -809,7 +809,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get smart selection ranges for code expansion")]
-    async fn selection_range(
+    pub async fn selection_range(
         &self,
         Parameters(request): Parameters<SelectionRangeRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -879,7 +879,7 @@ impl RustAnalyzerMCP {
     #[tool(
         description = "Find runnable items (tests, benchmarks, executables) with cargo commands"
     )]
-    async fn runnables(
+    pub async fn runnables(
         &self,
         Parameters(request): Parameters<RunnablesRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -966,7 +966,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Find all implementations of a trait at the given position")]
-    async fn implementations(
+    pub async fn implementations(
         &self,
         Parameters(request): Parameters<ImplementationsRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -1016,7 +1016,7 @@ impl RustAnalyzerMCP {
     }
 
     #[tool(description = "Get rust-analyzer LSP status")]
-    async fn lsp_status(
+    pub async fn lsp_status(
         &self,
         Parameters(_request): Parameters<LspClientStatusRequest>,
     ) -> Result<CallToolResult, McpError> {
@@ -1076,7 +1076,7 @@ impl RustAnalyzerMCP {
     #[tool(
         description = "Close a document in rust-analyzer to free memory and reduce resource usage"
     )]
-    async fn close_document(
+    pub async fn close_document(
         &self,
         Parameters(request): Parameters<CloseDocumentRequest>,
     ) -> Result<CallToolResult, McpError> {
