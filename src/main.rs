@@ -2,7 +2,6 @@ use clap::Parser;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
     model::*,
-    schemars,
     service::RequestContext,
     tool, tool_handler, tool_router,
     transport::stdio,
@@ -15,143 +14,14 @@ use tokio::sync::Mutex;
 use tracing::info;
 use tracing_subscriber::{self, EnvFilter};
 
+mod errors;
 mod lsp_client;
-use lsp_client::{LspClient, MAX_COMPLETION_ITEMS, MAX_SYMBOLS_COUNT};
+mod models;
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct HoverRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
+use lsp_client::{LspClient, MAX_COMPLETION_ITEMS};
+use models::*;
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CompletionRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct DiagnosticsRequest {
-    pub file_path: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct GotoDefinitionRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct FindReferencesRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-    #[serde(default = "default_include_declaration")]
-    pub include_declaration: bool,
-}
-
-fn default_include_declaration() -> bool {
-    true
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct FormatRequest {
-    pub file_path: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct RenameRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-    pub new_name: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CodeActionsRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct WorkspaceSymbolsRequest {
-    pub query: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct InlayHintsRequest {
-    pub file_path: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ExpandMacroRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct DocumentSymbolsRequest {
-    pub file_path: String,
-    #[serde(default = "default_page")]
-    pub page: usize,
-    #[serde(default = "default_page_size")]
-    pub page_size: usize,
-}
-
-fn default_page() -> usize {
-    0
-}
-
-fn default_page_size() -> usize {
-    MAX_SYMBOLS_COUNT
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct SignatureHelpRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct DocumentHighlightRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct SelectionRangeRequest {
-    pub file_path: String,
-    pub positions: Vec<PositionInfo>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct RunnablesRequest {
-    pub file_path: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ImplementationsRequest {
-    pub file_path: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct LspClientStatusRequest {
-    // No parameters needed - just returns status info
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CloseDocumentRequest {
-    pub file_path: String,
-}
+// All request models are now in models.rs
 
 #[derive(Debug, Parser)]
 #[command(name = "language-server-mcp")]
@@ -161,11 +31,7 @@ struct Args {
     workspace_root: Option<PathBuf>,
 }
 
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct PositionInfo {
-    pub line: u32,
-    pub column: u32,
-}
+// PositionInfo moved to models.rs
 
 #[derive(Clone)]
 pub struct RustAnalyzerMCP {
@@ -1481,7 +1347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CloseDocumentRequest, DocumentSymbolsRequest, LspClientStatusRequest};
+    use crate::models::{CloseDocumentRequest, DocumentSymbolsRequest, LspClientStatusRequest};
     use crate::lsp_client;
     use std::path::PathBuf;
 
