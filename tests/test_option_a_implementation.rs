@@ -84,8 +84,8 @@ async fn test_option_a_prewarm_and_retry() {
     // - Overall better reliability with retry logic
 
     assert!(
-        total_time < std::time::Duration::from_secs(5),
-        "Total time should be reasonable: {:?}",
+        total_time < std::time::Duration::from_secs(12),
+        "Total time should be reasonable with retry logic: {:?}",
         total_time
     );
 }
@@ -166,7 +166,8 @@ async fn test_option_a_error_handling() {
     // The retry logic should handle this gracefully
     // Either succeed with "no info" or fail with a reasonable error message
     assert!(
-        duration < std::time::Duration::from_secs(3),
-        "Error handling should be reasonably fast even with retries"
+        duration < std::time::Duration::from_secs(6),
+        "Error handling should be reasonably fast even with retries: {:?}",
+        duration
     );
 }

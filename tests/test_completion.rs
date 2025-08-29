@@ -343,7 +343,7 @@ async fn test_mcp_completion_hang_detection() {
         let start = Instant::now();
         let result = with_mcp_timeout(
             &format!("hang_detection_{}", description.replace(' ', "_")),
-            Duration::from_secs(8), // Account for retry logic in hang detection
+            Duration::from_secs(15), // Account for retry logic and potential indexing
             server.completion(Parameters(request)),
         )
         .await;

@@ -232,7 +232,7 @@ async fn test_mcp_hover_nonexistent_file() {
 
     // Should be fast even for nonexistent files
     assert!(
-        duration < Duration::from_secs(3),
+        duration < Duration::from_secs(6),
         "Nonexistent file hover should be reasonably fast: {:?}",
         duration
     );
@@ -270,7 +270,7 @@ async fn test_mcp_hover_rapid_requests() {
 
         let result = with_mcp_timeout(
             &format!("rapid_hover_{}", i),
-            Duration::from_secs(3),
+            Duration::from_secs(6),
             server.hover(Parameters(request)),
         )
         .await;

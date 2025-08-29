@@ -4,7 +4,6 @@
 use language_server_mcp::models::*;
 use language_server_mcp::server::RustAnalyzerMCP;
 use rmcp::handler::server::tool::Parameters;
-use rmcp::model::CallToolResult;
 use rmcp::ErrorData as McpError;
 use std::path::PathBuf;
 use std::time::Duration;

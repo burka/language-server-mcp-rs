@@ -4,7 +4,6 @@
 use language_server_mcp::models::*;
 use language_server_mcp::server::RustAnalyzerMCP;
 use rmcp::handler::server::tool::Parameters;
-use rmcp::model::CallToolResult;
 use rmcp::ErrorData as McpError;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -569,7 +568,7 @@ async fn test_signature_help_error_scenarios() {
 #[tokio::test]
 async fn test_all_tools_microsecond_timeout_summary() {
     println!("=== Testing ALL Tools with 1μs Timeout ===");
-    let server = create_test_server().await;
+    let _server = create_test_server().await;
 
     let tools_tested = [
         "hover", "completion", "diagnostics", "goto_definition",
