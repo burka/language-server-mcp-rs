@@ -22,13 +22,6 @@ fn is_success(result: &CallToolResult) -> bool {
     !result.content.is_empty()
 }
 
-/// Helper to extract text content length as a proxy for diagnostic count
-#[allow(dead_code)]
-fn get_content_length(result: &CallToolResult) -> usize {
-    result.content.first()
-        .map(|_| 1) // Simplified - actual content parsing would be more complex
-        .unwrap_or(0)
-}
 
 /// Timeout wrapper for MCP operations  
 async fn with_mcp_timeout<F, T>(name: &str, duration: Duration, future: F) -> Result<T, String>

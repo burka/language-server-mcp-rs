@@ -71,7 +71,7 @@ async fn test_mcp_completion_basic() {
                 println!("⚪ MCP completion succeeded but no items available (normal)");
             }
         }
-        Ok(Err(_e)) => {
+        Ok(Err(_)) => {
             println!("⚠️  MCP completion error occurred");
             // With Option A retry logic, completion should be more reliable
         }
@@ -175,7 +175,7 @@ async fn test_mcp_completion_invalid_position() {
                 println!("✅ MCP completion returned no items for invalid position (expected)");
             }
         }
-        Ok(Err(_e)) => {
+        Ok(Err(_)) => {
             println!("✅ MCP completion returned error for invalid position");
         }
         Err(e) => {
@@ -255,7 +255,7 @@ async fn test_mcp_completion_rapid_requests() {
                     println!("✅ Rapid completion {} succeeded, no items", i);
                 }
             }
-            Ok(Err(_e)) => {
+            Ok(Err(_)) => {
                 errors += 1;
                 println!("⚠️  Rapid completion {} error occurred", i);
             }
@@ -321,7 +321,7 @@ async fn test_mcp_completion_hang_detection() {
                     println!("✅ {} completed in {:?}: no items", description, duration);
                 }
             }
-            Ok(Err(_e)) => {
+            Ok(Err(_)) => {
                 println!("⚠️  {} error in {:?}: limited output", description, duration);
             }
             Err(e) => {
@@ -424,7 +424,7 @@ async fn test_mcp_completion_edge_cases() {
                     println!("✅ {} returned no items in {:?} (expected)", description, duration);
                 }
             }
-            Ok(Err(_e)) => {
+            Ok(Err(_)) => {
                 println!("✅ {} returned error in {:?}: limited output", description, duration);
             }
             Err(_) => {
