@@ -44,6 +44,7 @@ pub struct LspClient {
     system: Mutex<System>,
     // Crash detection and recovery
     consecutive_failures: Arc<Mutex<u32>>,
+    #[allow(dead_code)] // Used for hang detection, will be activated in future
     last_restart: Arc<Mutex<Instant>>,
 }
 
@@ -78,6 +79,17 @@ fn get_max_response_size_for_method(method: &str) -> usize {
 }
 
 impl LspClient {
+    /// Helper to convert a file path (relative or absolute) to a file URL
+    fn path_to_url(&self, file_path: &str) -> Result<Url, LspError> {
+        let absolute_path = if PathBuf::from(file_path).is_absolute() {
+            PathBuf::from(file_path)
+        } else {
+            self.workspace_root.join(file_path)
+        };
+        
+        Url::from_file_path(&absolute_path)
+            .map_err(|_| LspError::Other(format!("Invalid file path: {}", file_path)))
+    }
     pub async fn new(workspace_root: &Path) -> Result<Self, LspError> {
         info!("Starting rust-analyzer process");
 
@@ -151,6 +163,7 @@ impl LspClient {
     }
 
     /// Restart the rust-analyzer process if it has crashed or is hanging
+    #[allow(dead_code)] // Will be used for hang recovery in future
     pub async fn restart(&mut self) -> Result<(), LspError> {
         warn!("Restarting rust-analyzer due to failure or hang");
         
@@ -195,6 +208,7 @@ impl LspClient {
     }
 
     /// Check if we should restart due to too many failures
+    #[allow(dead_code)] // Will be used for hang detection in future
     async fn should_restart(&self) -> bool {
         let failures = *self.consecutive_failures.lock().await;
         let last_restart = *self.last_restart.lock().await;
@@ -274,9 +288,12 @@ impl LspClient {
         // Document not opened yet, open it
         debug!("Opening new document: {}", file_path);
         let content = tokio::fs::read_to_string(file_path).await?;
+        
+        // Path handling is now done in path_to_url helper
+        
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
                 language_id: "rust".to_string(),
                 version: 1,
                 text: content,
@@ -298,7 +315,7 @@ impl LspClient {
         Ok(())
     }
 
-    pub async fn close_document(&self, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn close_document(&self, file_path: &str) -> Result<(), LspError> {
         // Check if document is opened
         {
             let opened_docs = self.opened_documents.lock().await;
@@ -312,11 +329,11 @@ impl LspClient {
         debug!("Closing document: {}", file_path);
         let params = DidCloseTextDocumentParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
             },
         };
 
-        self.notify("textDocument/didClose", params).await?;
+        self.notify("textDocument/didClose", params).await.map_err(|e| LspError::CommunicationError(e.to_string()))?;
 
         // Remove from opened documents tracking
         {
@@ -341,14 +358,14 @@ impl LspClient {
         file_path: &str,
         line: u32,
         column: u32,
-    ) -> Result<Option<Hover>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<Hover>, LspError> {
         self.wait_for_ready().await;
         // Ensure document is open
-        self.open_document(file_path).await?;
+        self.open_document(file_path).await.map_err(|e| LspError::Other(e.to_string()))?;
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -359,7 +376,9 @@ impl LspClient {
         };
 
         let timeout_duration = Duration::from_secs(QUICK_OPERATION_TIMEOUT);
-        self.request_with_timeout("textDocument/hover", params, timeout_duration).await
+        self.request_with_timeout("textDocument/hover", params, timeout_duration)
+            .await
+            .map_err(|e| LspError::Other(e.to_string()))
     }
 
     pub async fn completion(
@@ -367,14 +386,14 @@ impl LspClient {
         file_path: &str,
         line: u32,
         column: u32,
-    ) -> Result<Option<CompletionResponse>, Box<dyn std::error::Error>> {
+    ) -> Result<Option<CompletionResponse>, LspError> {
         self.wait_for_ready().await;
         // Ensure document is open
-        self.open_document(file_path).await?;
+        self.open_document(file_path).await.map_err(|e| LspError::Other(e.to_string()))?;
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -386,7 +405,9 @@ impl LspClient {
             context: None,
         };
 
-        self.request("textDocument/completion", params).await
+        self.request("textDocument/completion", params)
+            .await
+            .map_err(|e| LspError::Other(e.to_string()))
     }
 
     pub async fn diagnostics(
