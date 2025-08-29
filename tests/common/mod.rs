@@ -63,7 +63,10 @@ where
     match timeout(duration, future).await {
         Ok(result) => Ok(result),
         Err(_) => {
-            eprintln!("⚠️  MCP operation '{}' timed out after {:?}", name, duration);
+            eprintln!(
+                "⚠️  MCP operation '{}' timed out after {:?}",
+                name, duration
+            );
             Err(format!("MCP operation '{}' timed out", name))
         }
     }
@@ -71,7 +74,8 @@ where
 
 // Get or initialize the shared MCP server (primary testing approach)
 #[allow(dead_code)]
-pub async fn get_test_mcp_server() -> Arc<Mutex<Option<language_server_mcp::server::RustAnalyzerMCP>>> {
+pub async fn get_test_mcp_server(
+) -> Arc<Mutex<Option<language_server_mcp::server::RustAnalyzerMCP>>> {
     let server_option = TEST_MCP_SERVER.clone();
     let mut server_guard = server_option.lock().await;
 

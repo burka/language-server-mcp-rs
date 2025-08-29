@@ -5,6 +5,7 @@ use serde_json::{json, Value};
 
 use std::collections::HashSet;
 use std::env;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -947,9 +948,87 @@ impl LspClient {
         stdin.write_all(content.as_bytes()).await?;
         stdin.flush().await?;
 
-        debug!("Sent LSP message: {}", content);
-
         Ok(())
+    }
+
+    /// Check if rust-analyzer has completed indexing and is ready for semantic requests
+    /// Uses rust-analyzer's custom extension method rust-analyzer/analyzerStatus
+    pub async fn check_indexing_status(&self) -> Result<bool, Box<dyn std::error::Error>> {
+        // Try to use rust-analyzer's analyzerStatus extension method
+        // This method returns a text status that might contain indexing information
+        match self
+            .request_with_timeout::<_, Value>(
+                "rust-analyzer/analyzerStatus",
+                json!({}),
+                Duration::from_secs(5),
+            )
+            .await
+        {
+            Ok(response) => {
+                let status_text = response.to_string();
+                debug!("rust-analyzer status: {}", status_text);
+
+                // Common indexing status indicators from rust-analyzer
+                let still_indexing = status_text.contains("indexing")
+                    || status_text.contains("loading")
+                    || status_text.contains("Building")
+                    || status_text.contains("Fetching")
+                    || status_text.contains("Resolving")
+                    || status_text.contains("metadata")
+                    || status_text.contains("crates.io");
+                Ok(!still_indexing)
+            }
+            Err(_) => {
+                // If analyzerStatus is not supported, fallback to assuming ready after a delay
+                // This happens if rust-analyzer doesn't support the extension method
+                debug!("rust-analyzer/analyzerStatus not supported, assuming ready");
+                Ok(true)
+            }
+        }
+    }
+
+    /// Wait for rust-analyzer to complete indexing with timeout and progress indication
+    /// Returns true if indexing completed, false if timed out
+    pub async fn wait_for_indexing_complete(&self, max_wait: Duration) -> bool {
+        let start = std::time::Instant::now();
+        let mut last_dot = std::time::Instant::now();
+
+        print!("Waiting for rust-analyzer indexing");
+        std::io::stdout().flush().unwrap_or(());
+
+        loop {
+            match self.check_indexing_status().await {
+                Ok(ready) => {
+                    if ready {
+                        println!(" ✓");
+                        return true;
+                    }
+                }
+                Err(_) => {
+                    // If status check fails, assume ready after initial wait
+                    if start.elapsed() > Duration::from_secs(2) {
+                        println!(" (status check failed, assuming ready)");
+                        return true;
+                    }
+                }
+            }
+
+            // Print progress dots every 500ms
+            if last_dot.elapsed() > Duration::from_millis(500) {
+                print!(".");
+                std::io::stdout().flush().unwrap_or(());
+                last_dot = std::time::Instant::now();
+            }
+
+            // Check timeout
+            if start.elapsed() > max_wait {
+                println!(" (timeout)");
+                return false;
+            }
+
+            // Small sleep to avoid busy waiting
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     async fn read_response(&self, expected_id: i64) -> Result<Value, LspError> {

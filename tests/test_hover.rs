@@ -41,7 +41,10 @@ where
     match timeout(duration, future).await {
         Ok(result) => Ok(result),
         Err(_) => {
-            eprintln!("⚠️  MCP operation '{}' timed out after {:?}", name, duration);
+            eprintln!(
+                "⚠️  MCP operation '{}' timed out after {:?}",
+                name, duration
+            );
             Err(format!("MCP operation '{}' timed out", name))
         }
     }
@@ -55,7 +58,7 @@ async fn test_mcp_hover_on_struct() {
     // Test hover on LspClient struct (line numbers are 1-indexed for MCP)
     let request = language_server_mcp::models::HoverRequest {
         file_path: "src/lsp_client.rs".to_string(),
-        line: 35, // "pub struct LspClient"
+        line: 35,   // "pub struct LspClient"
         column: 15, // "LspClient"
     };
 
@@ -64,7 +67,8 @@ async fn test_mcp_hover_on_struct() {
         "mcp_hover_struct",
         Duration::from_secs(5),
         server.hover(Parameters(request)),
-    ).await;
+    )
+    .await;
 
     let duration = start.elapsed();
     println!("📊 MCP hover on struct completed in {:?}", duration);
@@ -104,7 +108,7 @@ async fn test_mcp_hover_on_function() {
     // Test hover on get_timeout_secs function
     let request = language_server_mcp::models::HoverRequest {
         file_path: "src/lsp_client.rs".to_string(),
-        line: 53, // "pub fn get_timeout_secs"
+        line: 53,   // "pub fn get_timeout_secs"
         column: 15, // "get_timeout_secs"
     };
 
@@ -133,7 +137,7 @@ async fn test_mcp_hover_on_function() {
     }
 }
 
-#[tokio::test] 
+#[tokio::test]
 async fn test_mcp_hover_on_imports() {
     println!("🔍 Testing MCP hover on imports...");
     let server = create_hover_test_server().await;
@@ -141,7 +145,7 @@ async fn test_mcp_hover_on_imports() {
     // Test hover on import statement in main.rs
     let request = language_server_mcp::models::HoverRequest {
         file_path: "src/main.rs".to_string(),
-        line: 4, // "use language_server_mcp::server::RustAnalyzerMCP;"
+        line: 4,    // "use language_server_mcp::server::RustAnalyzerMCP;"
         column: 35, // "RustAnalyzerMCP"
     };
 
@@ -178,7 +182,7 @@ async fn test_mcp_hover_invalid_position() {
     // Test hover on invalid position - should not hang
     let request = language_server_mcp::models::HoverRequest {
         file_path: "src/main.rs".to_string(),
-        line: 99999, // Invalid line
+        line: 99999,   // Invalid line
         column: 99999, // Invalid column
     };
 
@@ -187,7 +191,8 @@ async fn test_mcp_hover_invalid_position() {
         "mcp_hover_invalid",
         Duration::from_secs(2), // Short timeout - should be fast
         server.hover(Parameters(request)),
-    ).await;
+    )
+    .await;
     let duration = start.elapsed();
 
     println!("📊 MCP hover invalid position completed in {:?}", duration);
@@ -267,7 +272,8 @@ async fn test_mcp_hover_rapid_requests() {
             &format!("rapid_hover_{}", i),
             Duration::from_secs(3),
             server.hover(Parameters(request)),
-        ).await;
+        )
+        .await;
 
         match result {
             Ok(Ok(tool_result)) => {
@@ -292,8 +298,10 @@ async fn test_mcp_hover_rapid_requests() {
     }
 
     let total_time = start_time.elapsed();
-    println!("📊 Rapid hover test: {}/10 successful, {} errors, total time: {:?}", 
-             successful, errors, total_time);
+    println!(
+        "📊 Rapid hover test: {}/10 successful, {} errors, total time: {:?}",
+        successful, errors, total_time
+    );
 
     // With Option A, we should have reasonable performance
     assert!(
@@ -311,7 +319,10 @@ async fn test_mcp_hover_option_a_performance() {
     let start = Instant::now();
     let server = create_hover_test_server().await;
     let creation_time = start.elapsed();
-    println!("📊 Server creation with Option A pre-warming: {:?}", creation_time);
+    println!(
+        "📊 Server creation with Option A pre-warming: {:?}",
+        creation_time
+    );
 
     // Test 2: Immediate hover request (should benefit from pre-warming)
     let request = language_server_mcp::models::HoverRequest {
@@ -323,9 +334,9 @@ async fn test_mcp_hover_option_a_performance() {
     let hover_start = Instant::now();
     let result = server.hover(Parameters(request)).await;
     let hover_time = hover_start.elapsed();
-    
+
     println!("📊 Immediate hover request time: {:?}", hover_time);
-    
+
     match result {
         Ok(tool_result) => {
             if is_success(&tool_result) {
@@ -335,7 +346,10 @@ async fn test_mcp_hover_option_a_performance() {
             }
         }
         Err(e) => {
-            println!("⚠️  Immediate hover error (Option A retry should have helped): {:?}", e);
+            println!(
+                "⚠️  Immediate hover error (Option A retry should have helped): {:?}",
+                e
+            );
         }
     }
 

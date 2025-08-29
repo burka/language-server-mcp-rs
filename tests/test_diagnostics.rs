@@ -22,7 +22,6 @@ fn is_success(result: &CallToolResult) -> bool {
     !result.content.is_empty()
 }
 
-
 /// Timeout wrapper for MCP operations  
 async fn with_mcp_timeout<F, T>(name: &str, duration: Duration, future: F) -> Result<T, String>
 where
@@ -31,7 +30,10 @@ where
     match timeout(duration, future).await {
         Ok(result) => Ok(result),
         Err(_) => {
-            eprintln!("⚠️  MCP operation '{}' timed out after {:?}", name, duration);
+            eprintln!(
+                "⚠️  MCP operation '{}' timed out after {:?}",
+                name, duration
+            );
             Err(format!("MCP operation '{}' timed out", name))
         }
     }
@@ -51,7 +53,8 @@ async fn test_mcp_diagnostics_clean_file() {
         "mcp_diagnostics_main",
         Duration::from_secs(5),
         server.diagnostics(Parameters(request)),
-    ).await;
+    )
+    .await;
     let duration = start.elapsed();
 
     println!("📊 MCP diagnostics on main.rs completed in {:?}", duration);
@@ -105,10 +108,16 @@ async fn test_mcp_diagnostics_multiple_files() {
             Ok(tool_result) => {
                 if is_success(&tool_result) {
                     successful += 1;
-                    println!("✅ MCP diagnostics for {} succeeded in {:?}", file, duration);
+                    println!(
+                        "✅ MCP diagnostics for {} succeeded in {:?}",
+                        file, duration
+                    );
                 } else {
                     successful += 1; // Empty result is still success (clean file)
-                    println!("✅ MCP diagnostics for {} clean (no issues) in {:?}", file, duration);
+                    println!(
+                        "✅ MCP diagnostics for {} clean (no issues) in {:?}",
+                        file, duration
+                    );
                 }
             }
             Err(e) => {
@@ -120,14 +129,19 @@ async fn test_mcp_diagnostics_multiple_files() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    println!("📊 Multiple file diagnostics: {}/{} successful, total time: {:?}", 
-             successful, test_files.len(), total_time);
+    println!(
+        "📊 Multiple file diagnostics: {}/{} successful, total time: {:?}",
+        successful,
+        test_files.len(),
+        total_time
+    );
 
     // With Option A pre-warming, most files should succeed
     assert!(
         successful >= test_files.len() - 1, // Allow 1 failure
         "Most files should have successful diagnostics: {}/{}",
-        successful, test_files.len()
+        successful,
+        test_files.len()
     );
 }
 
@@ -145,10 +159,14 @@ async fn test_mcp_diagnostics_invalid_file() {
         "mcp_diagnostics_invalid",
         Duration::from_secs(3), // Should be fast for invalid files
         server.diagnostics(Parameters(request)),
-    ).await;
+    )
+    .await;
     let duration = start.elapsed();
 
-    println!("📊 MCP diagnostics invalid file completed in {:?}", duration);
+    println!(
+        "📊 MCP diagnostics invalid file completed in {:?}",
+        duration
+    );
 
     // Should be fast regardless of outcome
     assert!(
@@ -160,13 +178,18 @@ async fn test_mcp_diagnostics_invalid_file() {
     match result {
         Ok(Ok(tool_result)) => {
             if is_success(&tool_result) {
-                println!("⚪ MCP diagnostics returned content for invalid file (unexpected but ok)");
+                println!(
+                    "⚪ MCP diagnostics returned content for invalid file (unexpected but ok)"
+                );
             } else {
                 println!("✅ MCP diagnostics returned empty for invalid file (expected)");
             }
         }
         Ok(Err(e)) => {
-            println!("✅ MCP diagnostics returned error for invalid file: {:?}", e);
+            println!(
+                "✅ MCP diagnostics returned error for invalid file: {:?}",
+                e
+            );
         }
         Err(e) => {
             panic!("MCP diagnostics should not timeout on invalid file: {}", e);
@@ -193,7 +216,8 @@ async fn test_mcp_diagnostics_rapid_requests() {
             &format!("rapid_diagnostics_{}", i),
             Duration::from_secs(3),
             server.diagnostics(Parameters(request)),
-        ).await;
+        )
+        .await;
 
         match result {
             Ok(Ok(tool_result)) => {
@@ -219,8 +243,10 @@ async fn test_mcp_diagnostics_rapid_requests() {
     }
 
     let total_time = start_time.elapsed();
-    println!("📊 Rapid diagnostics: {}/8 successful, {} errors, total time: {:?}", 
-             successful, errors, total_time);
+    println!(
+        "📊 Rapid diagnostics: {}/8 successful, {} errors, total time: {:?}",
+        successful, errors, total_time
+    );
 
     // With Option A, we should have good performance and reliability
     assert!(
@@ -256,14 +282,20 @@ async fn test_mcp_diagnostics_concurrent() {
         let result = timeout(
             Duration::from_secs(5),
             server.diagnostics(Parameters(request)),
-        ).await;
+        )
+        .await;
         let duration = start.elapsed();
 
         let task_result = match result {
             Ok(Ok(tool_result)) => {
                 let success = is_success(&tool_result);
-                println!("✅ Concurrent diagnostics {} ({}) in {:?}: {}", 
-                         i, file, duration, if success { "has content" } else { "clean" });
+                println!(
+                    "✅ Concurrent diagnostics {} ({}) in {:?}: {}",
+                    i,
+                    file,
+                    duration,
+                    if success { "has content" } else { "clean" }
+                );
                 (true, duration)
             }
             Ok(Err(e)) => {
@@ -283,24 +315,33 @@ async fn test_mcp_diagnostics_concurrent() {
     let results = tasks;
     let total_time = start_time.elapsed();
 
-    let successful = results.iter()
+    let successful = results
+        .iter()
         .filter_map(|r| r.as_ref().ok())
         .filter(|(success, _)| *success)
         .count();
 
-    let avg_duration: Duration = results.iter()
+    let avg_duration: Duration = results
+        .iter()
         .filter_map(|r| r.as_ref().ok())
         .map(|(_, duration)| *duration)
-        .sum::<Duration>() / results.len() as u32;
+        .sum::<Duration>()
+        / results.len() as u32;
 
-    println!("📊 Concurrent diagnostics: {}/{} successful, avg time: {:?}, total: {:?}", 
-             successful, files.len(), avg_duration, total_time);
+    println!(
+        "📊 Concurrent diagnostics: {}/{} successful, avg time: {:?}, total: {:?}",
+        successful,
+        files.len(),
+        avg_duration,
+        total_time
+    );
 
     // With Option A, concurrent requests should work well
     assert!(
         successful >= 2, // At least 2/3 should succeed
         "Most concurrent requests should succeed: {}/{}",
-        successful, files.len()
+        successful,
+        files.len()
     );
 }
 
@@ -308,7 +349,7 @@ async fn test_mcp_diagnostics_concurrent() {
 async fn test_mcp_diagnostics_option_a_benefits() {
     println!("🔍 Testing MCP diagnostics Option A pre-warming benefits...");
 
-    // Test 1: Server creation time 
+    // Test 1: Server creation time
     let start = Instant::now();
     let server = create_diagnostics_test_server().await;
     let creation_time = start.elapsed();
@@ -334,7 +375,10 @@ async fn test_mcp_diagnostics_option_a_benefits() {
             }
         }
         Err(e) => {
-            println!("⚠️  Immediate diagnostics error (Option A retry should help): {:?}", e);
+            println!(
+                "⚠️  Immediate diagnostics error (Option A retry should help): {:?}",
+                e
+            );
         }
     }
 
@@ -379,7 +423,10 @@ async fn test_mcp_diagnostics_path_variants() {
         match result {
             Ok(tool_result) => {
                 if is_success(&tool_result) {
-                    println!("✅ {} succeeded in {:?}: has content", description, duration);
+                    println!(
+                        "✅ {} succeeded in {:?}: has content",
+                        description, duration
+                    );
                 } else {
                     println!("✅ {} succeeded in {:?}: clean", description, duration);
                 }
@@ -393,7 +440,8 @@ async fn test_mcp_diagnostics_path_variants() {
         assert!(
             duration < Duration::from_secs(3),
             "{} should be reasonably fast: {:?}",
-            description, duration
+            description,
+            duration
         );
     }
 }

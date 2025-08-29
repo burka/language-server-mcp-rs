@@ -77,20 +77,21 @@ impl LspError {
             LspError::InitializationInProgress(_) => true,
             LspError::CommunicationError(msg) | LspError::Other(msg) => {
                 // Detect specific initialization error patterns from our tests
-                msg.contains("server cancelled the request") ||
-                msg.contains("-32802") ||
-                msg.contains("retriggerRequest") ||
-                (msg.contains("-32603") && msg.contains("LSP error"))
-            },
+                msg.contains("server cancelled the request")
+                    || msg.contains("-32802")
+                    || msg.contains("retriggerRequest")
+                    || (msg.contains("-32603") && msg.contains("LSP error"))
+            }
             _ => false,
         }
     }
 
     /// Convert LSP JSON-RPC errors to initialization errors when appropriate
     pub fn from_lsp_error(msg: String, method: &str) -> Self {
-        if msg.contains("server cancelled the request") || 
-           msg.contains("-32802") ||
-           msg.contains("retriggerRequest") {
+        if msg.contains("server cancelled the request")
+            || msg.contains("-32802")
+            || msg.contains("retriggerRequest")
+        {
             LspError::InitializationInProgress(method.to_string())
         } else if msg.contains("-32603") {
             // Generic LSP error - could be initialization related

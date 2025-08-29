@@ -35,7 +35,10 @@ where
     match timeout(duration, future).await {
         Ok(result) => Ok(result),
         Err(_) => {
-            eprintln!("⚠️  MCP operation '{}' timed out after {:?}", name, duration);
+            eprintln!(
+                "⚠️  MCP operation '{}' timed out after {:?}",
+                name, duration
+            );
             Err(format!("MCP operation '{}' timed out", name))
         }
     }
@@ -58,7 +61,8 @@ async fn test_mcp_completion_basic() {
         "mcp_completion_basic",
         Duration::from_secs(5),
         server.completion(Parameters(request)),
-    ).await;
+    )
+    .await;
     let duration = start.elapsed();
 
     println!("📊 MCP completion basic completed in {:?}", duration);
@@ -113,10 +117,16 @@ async fn test_mcp_completion_multiple_positions() {
             Ok(tool_result) => {
                 if has_completions(&tool_result) {
                     successful += 1;
-                    println!("✅ MCP completion {} succeeded in {:?}: has items", description, duration);
+                    println!(
+                        "✅ MCP completion {} succeeded in {:?}: has items",
+                        description, duration
+                    );
                 } else {
                     successful += 1; // No items is still a successful response
-                    println!("✅ MCP completion {} succeeded in {:?}: no items", description, duration);
+                    println!(
+                        "✅ MCP completion {} succeeded in {:?}: no items",
+                        description, duration
+                    );
                 }
             }
             Err(e) => {
@@ -128,14 +138,19 @@ async fn test_mcp_completion_multiple_positions() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    println!("📊 Multiple position completion: {}/{} successful, total time: {:?}", 
-             successful, positions.len(), total_time);
+    println!(
+        "📊 Multiple position completion: {}/{} successful, total time: {:?}",
+        successful,
+        positions.len(),
+        total_time
+    );
 
     // With Option A, most positions should succeed
     assert!(
         successful >= positions.len() - 1, // Allow 1 failure
         "Most completion positions should succeed: {}/{}",
-        successful, positions.len()
+        successful,
+        positions.len()
     );
 }
 
@@ -146,8 +161,8 @@ async fn test_mcp_completion_invalid_position() {
 
     let request = language_server_mcp::models::CompletionRequest {
         file_path: "src/main.rs".to_string(),
-        line: 99999, // Invalid line
-        column: 99999, // Invalid column  
+        line: 99999,   // Invalid line
+        column: 99999, // Invalid column
     };
 
     let start = Instant::now();
@@ -155,10 +170,14 @@ async fn test_mcp_completion_invalid_position() {
         "mcp_completion_invalid",
         Duration::from_secs(2), // Should be fast for invalid positions
         server.completion(Parameters(request)),
-    ).await;
+    )
+    .await;
     let duration = start.elapsed();
 
-    println!("📊 MCP completion invalid position completed in {:?}", duration);
+    println!(
+        "📊 MCP completion invalid position completed in {:?}",
+        duration
+    );
 
     // Should be fast regardless of outcome
     assert!(
@@ -170,7 +189,9 @@ async fn test_mcp_completion_invalid_position() {
     match result {
         Ok(Ok(tool_result)) => {
             if has_completions(&tool_result) {
-                println!("⚪ MCP completion returned items for invalid position (unexpected but ok)");
+                println!(
+                    "⚪ MCP completion returned items for invalid position (unexpected but ok)"
+                );
             } else {
                 println!("✅ MCP completion returned no items for invalid position (expected)");
             }
@@ -179,7 +200,10 @@ async fn test_mcp_completion_invalid_position() {
             println!("✅ MCP completion returned error for invalid position");
         }
         Err(e) => {
-            panic!("MCP completion should not timeout on invalid position: {}", e);
+            panic!(
+                "MCP completion should not timeout on invalid position: {}",
+                e
+            );
         }
     }
 }
@@ -199,7 +223,10 @@ async fn test_mcp_completion_nonexistent_file() {
     let result = server.completion(Parameters(request)).await;
     let duration = start.elapsed();
 
-    println!("📊 MCP completion nonexistent file completed in {:?}", duration);
+    println!(
+        "📊 MCP completion nonexistent file completed in {:?}",
+        duration
+    );
 
     // Should be reasonably fast
     assert!(
@@ -211,13 +238,18 @@ async fn test_mcp_completion_nonexistent_file() {
     match result {
         Ok(tool_result) => {
             if has_completions(&tool_result) {
-                println!("⚪ MCP completion returned items for nonexistent file (unexpected but ok)");
+                println!(
+                    "⚪ MCP completion returned items for nonexistent file (unexpected but ok)"
+                );
             } else {
                 println!("✅ MCP completion returned no items for nonexistent file (expected)");
             }
         }
         Err(e) => {
-            println!("✅ MCP completion returned error for nonexistent file: {:?}", e);
+            println!(
+                "✅ MCP completion returned error for nonexistent file: {:?}",
+                e
+            );
         }
     }
 }
@@ -243,7 +275,8 @@ async fn test_mcp_completion_rapid_requests() {
             &format!("rapid_completion_{}", i),
             Duration::from_secs(4),
             server.completion(Parameters(request)),
-        ).await;
+        )
+        .await;
 
         match result {
             Ok(Ok(tool_result)) => {
@@ -269,8 +302,10 @@ async fn test_mcp_completion_rapid_requests() {
     }
 
     let total_time = start_time.elapsed();
-    println!("📊 Rapid completion: {}/6 successful, {} errors, total time: {:?}", 
-             successful, errors, total_time);
+    println!(
+        "📊 Rapid completion: {}/6 successful, {} errors, total time: {:?}",
+        successful, errors, total_time
+    );
 
     // With Option A, we should have good performance
     assert!(
@@ -310,7 +345,8 @@ async fn test_mcp_completion_hang_detection() {
             &format!("hang_detection_{}", description.replace(' ', "_")),
             Duration::from_secs(3), // Reasonable timeout for hang detection
             server.completion(Parameters(request)),
-        ).await;
+        )
+        .await;
         let duration = start.elapsed();
 
         match result {
@@ -322,7 +358,10 @@ async fn test_mcp_completion_hang_detection() {
                 }
             }
             Ok(Err(_)) => {
-                println!("⚠️  {} error in {:?}: limited output", description, duration);
+                println!(
+                    "⚠️  {} error in {:?}: limited output",
+                    description, duration
+                );
             }
             Err(e) => {
                 panic!("{} timed out: {} (hang detected!)", description, e);
@@ -364,11 +403,16 @@ async fn test_mcp_completion_option_a_benefits() {
             if has_completions(&tool_result) {
                 println!("✅ Immediate completion succeeded with items (Option A worked!)");
             } else {
-                println!("✅ Immediate completion succeeded, no items (Option A prevented failures!)");
+                println!(
+                    "✅ Immediate completion succeeded, no items (Option A prevented failures!)"
+                );
             }
         }
         Err(e) => {
-            println!("⚠️  Immediate completion error (Option A retry should help): {:?}", e);
+            println!(
+                "⚠️  Immediate completion error (Option A retry should help): {:?}",
+                e
+            );
         }
     }
 
@@ -389,14 +433,14 @@ async fn test_mcp_completion_option_a_benefits() {
     );
 }
 
-#[tokio::test] 
+#[tokio::test]
 async fn test_mcp_completion_edge_cases() {
     println!("🔍 Testing MCP completion edge cases...");
     let server = create_completion_test_server().await;
 
     let edge_cases = [
         ("src/main.rs", 1, 1, "Very beginning of file"),
-        ("src/main.rs", 1000, 1, "Way past end of file"), 
+        ("src/main.rs", 1000, 1, "Way past end of file"),
         ("src/main.rs", 10, 1000, "Way past end of line"),
         (".", 1, 1, "Current directory as file"),
         ("", 1, 1, "Empty file path"),
@@ -413,19 +457,29 @@ async fn test_mcp_completion_edge_cases() {
         let result = timeout(
             Duration::from_secs(2), // Short timeout for edge cases
             server.completion(Parameters(request)),
-        ).await;
+        )
+        .await;
         let duration = start.elapsed();
 
         match result {
             Ok(Ok(tool_result)) => {
                 if has_completions(&tool_result) {
-                    println!("⚪ {} returned items in {:?} (unexpected but ok)", description, duration);
+                    println!(
+                        "⚪ {} returned items in {:?} (unexpected but ok)",
+                        description, duration
+                    );
                 } else {
-                    println!("✅ {} returned no items in {:?} (expected)", description, duration);
+                    println!(
+                        "✅ {} returned no items in {:?} (expected)",
+                        description, duration
+                    );
                 }
             }
             Ok(Err(_)) => {
-                println!("✅ {} returned error in {:?}: limited output", description, duration);
+                println!(
+                    "✅ {} returned error in {:?}: limited output",
+                    description, duration
+                );
             }
             Err(_) => {
                 println!("⚠️  {} timed out in {:?}", description, duration);
@@ -436,7 +490,8 @@ async fn test_mcp_completion_edge_cases() {
         assert!(
             duration < Duration::from_secs(2),
             "{} should be fast: {:?}",
-            description, duration
+            description,
+            duration
         );
     }
 }
