@@ -11,9 +11,8 @@ use tokio::time::timeout;
 // Since direct MCP server usage is complex due to macros, let's use the LspClient directly
 // We'll initialize it lazily on first use within the test runtime
 #[allow(dead_code)]
-pub static TEST_LSP_CLIENT: Lazy<Arc<Mutex<Option<language_server_mcp::lsp_client::LspClient>>>> = Lazy::new(|| {
-    Arc::new(Mutex::new(None))
-});
+pub static TEST_LSP_CLIENT: Lazy<Arc<Mutex<Option<language_server_mcp::lsp_client::LspClient>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(None)));
 
 // Test timeout with automatic hang detection
 pub async fn with_timeout<T, F>(name: &str, duration: Duration, future: F) -> Result<T, String>
@@ -23,13 +22,16 @@ where
     match timeout(duration, future).await {
         Ok(result) => Ok(result),
         Err(_) => {
-            eprintln!("⚠️  Test '{}' timed out after {:?} - possible hang detected", name, duration);
+            eprintln!(
+                "⚠️  Test '{}' timed out after {:?} - possible hang detected",
+                name, duration
+            );
             Err(format!("Test '{}' timed out", name))
         }
     }
 }
 
-// Standard timeout for most operations  
+// Standard timeout for most operations
 #[allow(dead_code)]
 pub const STANDARD_TIMEOUT: Duration = Duration::from_secs(5);
 #[allow(dead_code)]
@@ -40,11 +42,11 @@ pub const TEST_TRAIT_RS: &str = "tests/test_trait.rs";
 pub async fn get_test_client() -> Arc<Mutex<Option<language_server_mcp::lsp_client::LspClient>>> {
     let client_option = TEST_LSP_CLIENT.clone();
     let mut client_guard = client_option.lock().await;
-    
+
     if client_guard.is_none() {
         // Initialize the client
         let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        
+
         match language_server_mcp::lsp_client::LspClient::new(&workspace_root).await {
             Ok(client) => {
                 println!("✅ rust-analyzer LSP client initialized for testing");
@@ -62,7 +64,7 @@ pub async fn get_test_client() -> Arc<Mutex<Option<language_server_mcp::lsp_clie
             }
         }
     }
-    
+
     // Return the shared client wrapped in Arc<Mutex<>>
     drop(client_guard);
     client_option

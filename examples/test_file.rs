@@ -65,15 +65,17 @@ fn main() {
 
     // Test hover: hover over 'user' to see its type
     println!("{}", user.greet());
-    
+
     // Use the introduce method to avoid warning
     println!("{}", user.introduce());
 
     // Test completion: type 'user.' to see available methods
     let _message = user.greet();
-    
+
     // Create a guest to avoid warning
-    let guest = Guest { name: "Bob".to_string() };
+    let guest = Guest {
+        name: "Bob".to_string(),
+    };
     println!("{}", guest.greet());
 
     // Test diagnostics: uncomment this line to see an error
@@ -82,7 +84,7 @@ fn main() {
     // Test goto definition: click on HashMap to go to its definition
     let mut scores: HashMap<String, i32> = HashMap::new();
     scores.insert("Alice".to_string(), 100);
-    
+
     // Use calculate_score function to avoid warning
     if let Some(score) = calculate_score(&scores, "Alice") {
         println!("Alice's score: {}", score);

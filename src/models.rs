@@ -1,8 +1,8 @@
 #![deny(dead_code)]
 
+use crate::lsp_client::MAX_SYMBOLS_COUNT;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use crate::lsp_client::MAX_SYMBOLS_COUNT;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HoverRequest {

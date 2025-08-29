@@ -18,7 +18,7 @@ impl MyTrait for MyStruct {
     fn do_something(&self) -> String {
         format!("MyStruct: {}", self.name)
     }
-    
+
     fn do_another(&self, value: i32) -> i32 {
         value * 2
     }
@@ -33,7 +33,7 @@ impl MyTrait for AnotherStruct {
     fn do_something(&self) -> String {
         format!("AnotherStruct: {}", self.id)
     }
-    
+
     fn do_another(&self, value: i32) -> i32 {
         value + 10
     }
@@ -54,16 +54,16 @@ pub fn test_function() {
     let my_struct = MyStruct {
         name: "Test".to_string(),
     };
-    
+
     // Test goto_definition - should work on MyStruct
     let _result = my_struct.do_something();
-    
+
     // Test signature help - cursor inside function call
     let _output = complex_function("John", 30, true);
-    
+
     // Test code actions - intentional error for quick fix
     // let x: i32 = "not a number";  // Type mismatch error
-    
+
     // Use trait
     let _trait_result = use_trait_object(&my_struct);
 }

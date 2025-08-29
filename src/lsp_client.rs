@@ -24,10 +24,10 @@ const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_RESPONSE_SIZE_BYTES: usize = 40 * 1024; // 40KB ≈ 10k tokens (LLM-friendly)
 
 // Operation-specific timeout defaults (in seconds)
-const QUICK_OPERATION_TIMEOUT: u64 = 10;  // hover, diagnostics, status
+const QUICK_OPERATION_TIMEOUT: u64 = 10; // hover, diagnostics, status
 const MEDIUM_OPERATION_TIMEOUT: u64 = 20; // goto_definition, find_references, completion
 const COMPLEX_OPERATION_TIMEOUT: u64 = 45; // code_actions, refactoring, rename
-const SLOW_OPERATION_TIMEOUT: u64 = 90;   // format_document, workspace operations
+const SLOW_OPERATION_TIMEOUT: u64 = 90; // format_document, workspace operations
 pub const MAX_LARGE_RESPONSE_SIZE_BYTES: usize = 120 * 1024; // 120KB ≈ 30k tokens (for diagnostics)
 pub const MAX_SYMBOLS_COUNT: usize = 200; // Reasonable symbol limit with paging
 pub const MAX_COMPLETION_ITEMS: usize = 25; // Reasonable completion limit
@@ -88,7 +88,7 @@ impl LspClient {
         } else {
             self.workspace_root.join(file_path)
         };
-        
+
         Url::from_file_path(&absolute_path)
             .map_err(|_| LspError::Other(format!("Invalid file path: {}", file_path)))
     }
@@ -105,16 +105,18 @@ impl LspClient {
         };
 
         // Check if workspace appears to be a Rust project
-        if !workspace_root.join("Cargo.toml").exists() 
+        if !workspace_root.join("Cargo.toml").exists()
             && !workspace_root.join("Cargo.lock").exists()
-            && !workspace_root.read_dir()
+            && !workspace_root
+                .read_dir()
                 .map_err(|_| LspError::WorkspaceNotFound(workspace_root.clone()))?
                 .any(|entry| {
                     entry.ok().is_some_and(|e| {
-                        e.file_name().to_string_lossy().ends_with(".rs") ||
-                        e.path().join("Cargo.toml").exists()
+                        e.file_name().to_string_lossy().ends_with(".rs")
+                            || e.path().join("Cargo.toml").exists()
                     })
-                }) {
+                })
+        {
             warn!("Warning: {} doesn't appear to be a Rust workspace (no Cargo.toml or .rs files found)", workspace_root.display());
         }
 
@@ -147,7 +149,9 @@ impl LspClient {
         };
 
         // Initialize synchronously for now - we'll add async initialization later
-        client.initialize().await
+        client
+            .initialize()
+            .await
             .map_err(|e| LspError::InitializationFailed(e.to_string()))?;
         client.is_ready.store(true, Ordering::Relaxed);
 
@@ -168,18 +172,18 @@ impl LspClient {
     #[allow(dead_code)] // Will be used for hang recovery in future
     pub async fn restart(&mut self) -> Result<(), LspError> {
         warn!("Restarting rust-analyzer due to failure or hang");
-        
+
         // Record restart
         *self.last_restart.lock().await = Instant::now();
-        
+
         // Kill the old process
         let _ = self.process.kill().await;
-        
+
         // Clear state
         self.is_ready.store(false, Ordering::Relaxed);
         self.opened_documents.lock().await.clear();
         *self.request_id.lock().await = 0;
-        
+
         // Start new process
         let mut process = Command::new("rust-analyzer")
             .stdin(Stdio::piped())
@@ -191,21 +195,22 @@ impl LspClient {
         let stdin = process.stdin.take().unwrap();
         let stdout = BufReader::new(process.stdout.take().unwrap());
         self.process_pid = process.id();
-        
+
         self.process = process;
         *self.stdin.lock().await = stdin;
         *self.stdout.lock().await = stdout;
-        
+
         // Re-initialize
-        self.initialize().await
+        self.initialize()
+            .await
             .map_err(|e| LspError::InitializationFailed(e.to_string()))?;
-        
+
         self.is_ready.store(true, Ordering::Relaxed);
         info!("rust-analyzer restarted successfully");
-        
+
         // Reset failure counter on successful restart
         *self.consecutive_failures.lock().await = 0;
-        
+
         Ok(())
     }
 
@@ -214,7 +219,7 @@ impl LspClient {
     async fn should_restart(&self) -> bool {
         let failures = *self.consecutive_failures.lock().await;
         let last_restart = *self.last_restart.lock().await;
-        
+
         // Restart if:
         // 1. More than 3 consecutive failures
         // 2. At least 5 seconds since last restart (prevent restart loop)
@@ -225,9 +230,12 @@ impl LspClient {
     async fn record_failure(&self) {
         let mut failures = self.consecutive_failures.lock().await;
         *failures += 1;
-        
+
         if *failures > 3 {
-            warn!("Multiple consecutive failures detected ({} failures)", *failures);
+            warn!(
+                "Multiple consecutive failures detected ({} failures)",
+                *failures
+            );
         }
     }
 
@@ -290,9 +298,9 @@ impl LspClient {
         // Document not opened yet, open it
         debug!("Opening new document: {}", file_path);
         let content = tokio::fs::read_to_string(file_path).await?;
-        
+
         // Path handling is now done in path_to_url helper
-        
+
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: self.path_to_url(file_path)?,
@@ -335,7 +343,9 @@ impl LspClient {
             },
         };
 
-        self.notify("textDocument/didClose", params).await.map_err(|e| LspError::CommunicationError(e.to_string()))?;
+        self.notify("textDocument/didClose", params)
+            .await
+            .map_err(|e| LspError::CommunicationError(e.to_string()))?;
 
         // Remove from opened documents tracking
         {
@@ -363,7 +373,9 @@ impl LspClient {
     ) -> Result<Option<Hover>, LspError> {
         self.wait_for_ready().await;
         // Ensure document is open
-        self.open_document(file_path).await.map_err(|e| LspError::Other(e.to_string()))?;
+        self.open_document(file_path)
+            .await
+            .map_err(|e| LspError::Other(e.to_string()))?;
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -391,7 +403,9 @@ impl LspClient {
     ) -> Result<Option<CompletionResponse>, LspError> {
         self.wait_for_ready().await;
         // Ensure document is open
-        self.open_document(file_path).await.map_err(|e| LspError::Other(e.to_string()))?;
+        self.open_document(file_path)
+            .await
+            .map_err(|e| LspError::Other(e.to_string()))?;
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -412,13 +426,12 @@ impl LspClient {
             .map_err(|e| LspError::Other(e.to_string()))
     }
 
-    pub async fn diagnostics(
-        &self,
-        file_path: &str,
-    ) -> Result<Vec<Diagnostic>, LspError> {
+    pub async fn diagnostics(&self, file_path: &str) -> Result<Vec<Diagnostic>, LspError> {
         self.wait_for_ready().await;
         // Ensure document is open
-        self.open_document(file_path).await.map_err(|e| LspError::Other(e.to_string()))?;
+        self.open_document(file_path)
+            .await
+            .map_err(|e| LspError::Other(e.to_string()))?;
         let params = DocumentDiagnosticParams {
             text_document: TextDocumentIdentifier {
                 uri: self.path_to_url(file_path)?,
@@ -430,10 +443,10 @@ impl LspClient {
         };
 
         let timeout_duration = Duration::from_secs(QUICK_OPERATION_TIMEOUT);
-        let response: DocumentDiagnosticReportResult =
-            self.request_with_timeout("textDocument/diagnostic", params, timeout_duration)
-                .await
-                .map_err(|e| LspError::Other(e.to_string()))?;
+        let response: DocumentDiagnosticReportResult = self
+            .request_with_timeout("textDocument/diagnostic", params, timeout_duration)
+            .await
+            .map_err(|e| LspError::Other(e.to_string()))?;
 
         match response {
             DocumentDiagnosticReportResult::Report(report) => match report {
@@ -452,7 +465,8 @@ impl LspClient {
         line: u32,
         column: u32,
     ) -> Result<Option<GotoDefinitionResponse>, Box<dyn std::error::Error>> {
-        self.goto_definition_with_timeout(file_path, line, column, None).await
+        self.goto_definition_with_timeout(file_path, line, column, None)
+            .await
     }
 
     pub async fn goto_definition_with_timeout(
@@ -468,7 +482,7 @@ impl LspClient {
         let params = GotoDefinitionParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -479,10 +493,10 @@ impl LspClient {
             partial_result_params: PartialResultParams::default(),
         };
 
-        let timeout_duration = Duration::from_secs(
-            timeout_secs.unwrap_or(MEDIUM_OPERATION_TIMEOUT)
-        );
-        self.request_with_timeout("textDocument/definition", params, timeout_duration).await
+        let timeout_duration =
+            Duration::from_secs(timeout_secs.unwrap_or(MEDIUM_OPERATION_TIMEOUT));
+        self.request_with_timeout("textDocument/definition", params, timeout_duration)
+            .await
     }
 
     pub async fn find_references(
@@ -498,7 +512,7 @@ impl LspClient {
         let params = ReferenceParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -524,7 +538,7 @@ impl LspClient {
         self.open_document(file_path).await?;
         let params = DocumentFormattingParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
             },
             options: FormattingOptions {
                 tab_size: 4,
@@ -535,7 +549,8 @@ impl LspClient {
         };
 
         let timeout_duration = Duration::from_secs(SLOW_OPERATION_TIMEOUT);
-        self.request_with_timeout("textDocument/formatting", params, timeout_duration).await
+        self.request_with_timeout("textDocument/formatting", params, timeout_duration)
+            .await
     }
 
     pub async fn rename(
@@ -551,7 +566,7 @@ impl LspClient {
         let params = RenameParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -563,7 +578,8 @@ impl LspClient {
         };
 
         let timeout_duration = Duration::from_secs(COMPLEX_OPERATION_TIMEOUT);
-        self.request_with_timeout("textDocument/rename", params, timeout_duration).await
+        self.request_with_timeout("textDocument/rename", params, timeout_duration)
+            .await
     }
 
     pub async fn code_actions(
@@ -577,7 +593,7 @@ impl LspClient {
         self.open_document(file_path).await?;
         let params = CodeActionParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
             },
             range: Range {
                 start: Position {
@@ -599,7 +615,8 @@ impl LspClient {
         };
 
         let timeout_duration = Duration::from_secs(COMPLEX_OPERATION_TIMEOUT);
-        self.request_with_timeout("textDocument/codeAction", params, timeout_duration).await
+        self.request_with_timeout("textDocument/codeAction", params, timeout_duration)
+            .await
     }
 
     pub async fn workspace_symbols(
@@ -632,7 +649,7 @@ impl LspClient {
 
         let params = InlayHintParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
             },
             range: Range {
                 start: Position {
@@ -663,7 +680,7 @@ impl LspClient {
         // rust-analyzer uses a custom expandMacro request
         let params = json!({
             "textDocument": {
-                "uri": Url::from_file_path(file_path).unwrap()
+                "uri": self.path_to_url(file_path)?
             },
             "position": {
                 "line": line,
@@ -684,7 +701,7 @@ impl LspClient {
         self.open_document(file_path).await?;
         let params = DocumentSymbolParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
             },
             work_done_progress_params: WorkDoneProgressParams::default(),
             partial_result_params: PartialResultParams::default(),
@@ -705,7 +722,7 @@ impl LspClient {
         let params = SignatureHelpParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -731,7 +748,7 @@ impl LspClient {
         let params = DocumentHighlightParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -755,7 +772,7 @@ impl LspClient {
         self.open_document(file_path).await?;
         let params = SelectionRangeParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
             },
             positions,
             work_done_progress_params: WorkDoneProgressParams::default(),
@@ -776,7 +793,7 @@ impl LspClient {
         // rust-analyzer uses a custom runnables request
         let params = json!({
             "textDocument": {
-                "uri": Url::from_file_path(file_path).unwrap()
+                "uri": self.path_to_url(file_path)?
             }
         });
 
@@ -796,7 +813,7 @@ impl LspClient {
         let params = GotoImplementationParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
-                    uri: Url::from_file_path(file_path).unwrap(),
+                    uri: self.path_to_url(file_path)?,
                 },
                 position: Position {
                     line,
@@ -825,8 +842,11 @@ impl LspClient {
         params: P,
         timeout_duration: Duration,
     ) -> Result<R, Box<dyn std::error::Error>> {
-        debug!("Starting LSP request: method={}, timeout={:?}", method, timeout_duration);
-        
+        debug!(
+            "Starting LSP request: method={}, timeout={:?}",
+            method, timeout_duration
+        );
+
         let mut id = self.request_id.lock().await;
         *id += 1;
         let request_id = *id;
@@ -853,9 +873,12 @@ impl LspClient {
                         return Err(Box::new(e));
                     }
                 }
-            },
+            }
             Err(_) => {
-                warn!("LSP request '{}' timed out after {:?}", method, timeout_duration);
+                warn!(
+                    "LSP request '{}' timed out after {:?}",
+                    method, timeout_duration
+                );
                 self.record_failure().await;
                 return Err(Box::new(LspError::TimeoutError(method.to_string())));
             }
@@ -863,14 +886,18 @@ impl LspClient {
 
         if let Some(error) = response.get("error") {
             self.record_failure().await;
-            return Err(Box::new(LspError::CommunicationError(format!("LSP error: {error:?}"))));
+            return Err(Box::new(LspError::CommunicationError(format!(
+                "LSP error: {error:?}"
+            ))));
         }
 
         let result = match response.get("result") {
             Some(res) => res,
             None => {
                 self.record_failure().await;
-                return Err(Box::new(LspError::CommunicationError("Missing result in response".to_string())));
+                return Err(Box::new(LspError::CommunicationError(
+                    "Missing result in response".to_string(),
+                )));
             }
         };
 
@@ -926,7 +953,10 @@ impl LspClient {
     }
 
     async fn read_response(&self, expected_id: i64) -> Result<Value, LspError> {
-        debug!("read_response: Looking for response with ID {}", expected_id);
+        debug!(
+            "read_response: Looking for response with ID {}",
+            expected_id
+        );
         let mut stdout = self.stdout.lock().await;
         let start_time = Instant::now();
         let overall_timeout = Duration::from_secs(self.timeout_secs);
@@ -934,12 +964,15 @@ impl LspClient {
         loop {
             // Check if we've exceeded the overall timeout
             if start_time.elapsed() > overall_timeout {
-                debug!("read_response: Overall timeout exceeded after {:?}", overall_timeout);
+                debug!(
+                    "read_response: Overall timeout exceeded after {:?}",
+                    overall_timeout
+                );
                 return Err(LspError::TimeoutError("read_response".to_string()));
             }
 
             let mut header = String::new();
-            
+
             // Add short timeout to individual read operations to prevent hanging
             match timeout(Duration::from_millis(100), stdout.read_line(&mut header)).await {
                 Ok(Ok(bytes_read)) => {
@@ -948,14 +981,20 @@ impl LspClient {
                         return Err(LspError::ProcessTerminated);
                     }
                     debug!("read_response: Read header line: {:?}", header.trim());
-                }, // Successfully read a line
+                } // Successfully read a line
                 Ok(Err(e)) => {
                     debug!("read_response: IO error reading header: {:?}", e);
-                    return Err(LspError::CommunicationError(format!("IO error reading header: {}", e)));
-                }, // IO error
+                    return Err(LspError::CommunicationError(format!(
+                        "IO error reading header: {}",
+                        e
+                    )));
+                } // IO error
                 Err(_) => {
                     // Individual read timed out, continue loop to check overall timeout
-                    debug!("read_response: Individual read timeout, continuing loop (elapsed: {:?})", start_time.elapsed());
+                    debug!(
+                        "read_response: Individual read timeout, continuing loop (elapsed: {:?})",
+                        start_time.elapsed()
+                    );
                     continue;
                 }
             };
@@ -979,7 +1018,10 @@ impl LspClient {
 
                 if let Some(id) = response.get("id") {
                     if id.as_i64() == Some(expected_id) {
-                        debug!("read_response: Found matching response for ID {}", expected_id);
+                        debug!(
+                            "read_response: Found matching response for ID {}",
+                            expected_id
+                        );
                         return Ok(response);
                     } else {
                         debug!("read_response: Response ID {:?} doesn't match expected {}, continuing...", id, expected_id);

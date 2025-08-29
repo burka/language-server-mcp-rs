@@ -7,15 +7,18 @@ use std::time::Duration;
 async fn test_hover_on_struct() {
     let client_arc = get_test_client().await;
     let client_guard = client_arc.lock().await;
-    let client = client_guard.as_ref().expect("LSP client should be initialized");
-    
+    let client = client_guard
+        .as_ref()
+        .expect("LSP client should be initialized");
+
     // Test hover on a struct definition (LspClient in lsp_client.rs)
     let result = with_timeout(
         "hover_on_struct",
         STANDARD_TIMEOUT,
-        client.hover(test_files::LSP_CLIENT_RS, 32, 11) // Line with "pub struct LspClient" (0-indexed line 32, column 11 for "LspClient")
-    ).await;
-    
+        client.hover(test_files::LSP_CLIENT_RS, 32, 11), // Line with "pub struct LspClient" (0-indexed line 32, column 11 for "LspClient")
+    )
+    .await;
+
     match result {
         Ok(Ok(Some(hover))) => {
             let content = format!("{:?}", hover);
@@ -48,15 +51,18 @@ async fn test_hover_on_struct() {
 async fn test_hover_on_function() {
     let client_arc = get_test_client().await;
     let client_guard = client_arc.lock().await;
-    let client = client_guard.as_ref().expect("LSP client should be initialized");
-    
+    let client = client_guard
+        .as_ref()
+        .expect("LSP client should be initialized");
+
     // Test hover on a function (get_timeout_secs in lsp_client.rs)
     let result = with_timeout(
         "hover_on_function",
         STANDARD_TIMEOUT,
-        client.hover(test_files::LSP_CLIENT_RS, 49, 11) // Line with "pub fn get_timeout_secs" (0-indexed line 49, column 11 for function name)
-    ).await;
-    
+        client.hover(test_files::LSP_CLIENT_RS, 49, 11), // Line with "pub fn get_timeout_secs" (0-indexed line 49, column 11 for function name)
+    )
+    .await;
+
     match result {
         Ok(Ok(Some(hover))) => {
             let content = format!("{:?}", hover);
@@ -86,15 +92,18 @@ async fn test_hover_on_function() {
 async fn test_hover_on_variable() {
     let client_arc = get_test_client().await;
     let client_guard = client_arc.lock().await;
-    let client = client_guard.as_ref().expect("LSP client should be initialized");
-    
+    let client = client_guard
+        .as_ref()
+        .expect("LSP client should be initialized");
+
     // Test hover on a variable in main.rs
     let result = with_timeout(
         "hover_on_variable",
         STANDARD_TIMEOUT,
-        client.hover(test_files::MAIN_RS, 1337, 15) // workspace_root variable
-    ).await;
-    
+        client.hover(test_files::MAIN_RS, 1337, 15), // workspace_root variable
+    )
+    .await;
+
     match result {
         Ok(Ok(Some(hover))) => {
             let content = format!("{:?}", hover);
@@ -120,15 +129,18 @@ async fn test_hover_on_variable() {
 async fn test_hover_on_trait() {
     let client_arc = get_test_client().await;
     let client_guard = client_arc.lock().await;
-    let client = client_guard.as_ref().expect("LSP client should be initialized");
-    
+    let client = client_guard
+        .as_ref()
+        .expect("LSP client should be initialized");
+
     // Test hover on trait in test_trait.rs
     let result = with_timeout(
         "hover_on_trait",
         STANDARD_TIMEOUT,
-        client.hover(TEST_TRAIT_RS, 6, 10) // Line with "pub trait MyTrait"
-    ).await;
-    
+        client.hover(TEST_TRAIT_RS, 6, 10), // Line with "pub trait MyTrait"
+    )
+    .await;
+
     match result {
         Ok(Ok(Some(hover))) => {
             let content = format!("{:?}", hover);
@@ -157,15 +169,18 @@ async fn test_hover_on_trait() {
 async fn test_hover_timeout_handling() {
     let client_arc = get_test_client().await;
     let client_guard = client_arc.lock().await;
-    let client = client_guard.as_ref().expect("LSP client should be initialized");
-    
+    let client = client_guard
+        .as_ref()
+        .expect("LSP client should be initialized");
+
     // Test that hover doesn't hang on invalid position
     let result = with_timeout(
         "hover_invalid_position",
-        Duration::from_secs(2), // Short timeout
-        client.hover(test_files::MAIN_RS, 99999, 99999) // Invalid position
-    ).await;
-    
+        Duration::from_secs(2),                          // Short timeout
+        client.hover(test_files::MAIN_RS, 99999, 99999), // Invalid position
+    )
+    .await;
+
     // Should complete quickly even with invalid position
     match result {
         Ok(_) => println!("Hover handled invalid position gracefully"),
@@ -183,21 +198,24 @@ async fn test_hover_timeout_handling() {
 async fn test_rust_analyzer_hang_detection() {
     let client_arc = get_test_client().await;
     let client_guard = client_arc.lock().await;
-    let client = client_guard.as_ref().expect("LSP client should be initialized");
-    
+    let client = client_guard
+        .as_ref()
+        .expect("LSP client should be initialized");
+
     // Test multiple rapid hover requests that might cause hangs
     println!("Testing hang detection with rapid hover requests...");
-    
+
     for i in 0..5 {
         let result = with_timeout(
             &format!("hover_rapid_{}", i),
             Duration::from_secs(3), // Generous timeout
-            client.hover(test_files::LSP_CLIENT_RS, 32, 11)
-        ).await;
-        
+            client.hover(test_files::LSP_CLIENT_RS, 32, 11),
+        )
+        .await;
+
         match result {
             Ok(Ok(Some(_))) => println!("✅ Hover {} succeeded", i),
-            Ok(Ok(None)) => println!("⚪ Hover {} returned no info (normal)", i), 
+            Ok(Ok(None)) => println!("⚪ Hover {} returned no info (normal)", i),
             Ok(Err(e)) => println!("⚠️  Hover {} LSP error: {}", i, e),
             Err(_) => {
                 println!("🔥 Hover {} timed out - hang detected!", i);
@@ -206,10 +224,10 @@ async fn test_rust_analyzer_hang_detection() {
                 break;
             }
         }
-        
+
         // Small delay between requests
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    
+
     println!("Hang detection test completed");
 }

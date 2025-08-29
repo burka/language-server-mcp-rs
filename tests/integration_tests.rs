@@ -505,9 +505,9 @@ async fn test_error_handling_invalid_position() -> Result<()> {
 #[tokio::test]
 async fn test_timeout_hanging_reproduction() -> Result<()> {
     use tokio::time::{timeout, Duration};
-    
+
     let client = create_test_client().await?;
-    
+
     // Test with our test_trait.rs file that seems to cause hanging
     let hanging_file = std::env::current_dir()
         .unwrap()
@@ -517,8 +517,11 @@ async fn test_timeout_hanging_reproduction() -> Result<()> {
         .unwrap()
         .to_string();
 
-    println!("Testing goto_definition on potentially hanging file: {}", hanging_file);
-    
+    println!(
+        "Testing goto_definition on potentially hanging file: {}",
+        hanging_file
+    );
+
     // Set a 10-second timeout to verify timeout mechanism works
     let goto_result = timeout(
         Duration::from_secs(10),
@@ -529,14 +532,18 @@ async fn test_timeout_hanging_reproduction() -> Result<()> {
                 "line": 58,  // Line with my_struct usage
                 "column": 15 // Position on variable
             })),
-        })
-    ).await;
+        }),
+    )
+    .await;
 
     match goto_result {
         Ok(result) => {
             match result {
                 Ok(call_result) => {
-                    println!("Got result (should not hang): error={:?}", call_result.is_error);
+                    println!(
+                        "Got result (should not hang): error={:?}",
+                        call_result.is_error
+                    );
                 }
                 Err(e) => {
                     println!("Got error result: {:?}", e);
@@ -549,7 +556,7 @@ async fn test_timeout_hanging_reproduction() -> Result<()> {
             // This is what we expect if the underlying request hangs
         }
     }
-    
+
     client.cancel().await?;
     Ok(())
 }

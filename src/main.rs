@@ -19,8 +19,9 @@ use tracing_subscriber::{self, EnvFilter};
 mod errors;
 mod lsp_client;
 mod models;
+mod tool_handlers;
 
-use lsp_client::{LspClient, MAX_COMPLETION_ITEMS};
+use lsp_client::LspClient;
 use models::*;
 
 // All request models are now in models.rs
@@ -49,7 +50,8 @@ impl RustAnalyzerMCP {
             "Initializing rust-analyzer MCP server for workspace: {:?}",
             workspace_root
         );
-        let lsp_client = LspClient::new(&workspace_root).await
+        let lsp_client = LspClient::new(&workspace_root)
+            .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         info!("rust-analyzer LSP client initialized and ready");
         Ok(Self {
@@ -68,36 +70,10 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<HoverRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let content = {
-            let result = {
-                let lsp_client = self.lsp_client.lock().await;
-                lsp_client
-                    .hover(&request.file_path, request.line, request.column)
-                    .await
-            };
-
-            match result {
-                Ok(Some(hover)) => match hover.contents {
-                    lsp_types::HoverContents::Markup(markup) => markup.value,
-                    lsp_types::HoverContents::Array(markups) => markups
-                        .into_iter()
-                        .map(|m| match m {
-                            lsp_types::MarkedString::String(s) => s,
-                            lsp_types::MarkedString::LanguageString(ls) => ls.value,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n\n"),
-                    lsp_types::HoverContents::Scalar(ms) => match ms {
-                        lsp_types::MarkedString::String(s) => s,
-                        lsp_types::MarkedString::LanguageString(ls) => ls.value,
-                    },
-                },
-                Ok(None) => "No hover information available".to_string(),
-                Err(e) => return Err(McpError::internal_error(format!("LSP error: {e}"), None)),
-            }
-        };
-
-        Ok(CallToolResult::success(vec![Content::text(content)]))
+        match tool_handlers::handle_hover(&self.lsp_client, request).await {
+            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+            Err(e) => Err(McpError::internal_error(e, None)),
+        }
     }
 
     #[tool(description = "Get code completions at a specific position")]
@@ -105,51 +81,10 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<CompletionRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let content = {
-            let result = {
-                let lsp_client = self.lsp_client.lock().await;
-                lsp_client
-                    .completion(&request.file_path, request.line, request.column)
-                    .await
-            };
-
-            match result {
-                Ok(Some(result)) => {
-                    let completions = match result {
-                        lsp_types::CompletionResponse::Array(items) => items,
-                        lsp_types::CompletionResponse::List(list) => list.items,
-                    };
-
-                    let completion_text = completions
-                        .into_iter()
-                        .take(MAX_COMPLETION_ITEMS) // Limit for readability and performance
-                        .map(|item| {
-                            let detail = item.detail.unwrap_or_default();
-                            let doc = item
-                                .documentation
-                                .map(|d| match d {
-                                    lsp_types::Documentation::String(s) => s,
-                                    lsp_types::Documentation::MarkupContent(mc) => mc.value,
-                                })
-                                .unwrap_or_default();
-
-                            if doc.is_empty() {
-                                format!("- {}: {}", item.label, detail)
-                            } else {
-                                format!("- {}: {} - {}", item.label, detail, doc)
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    format!("Completions:\n{completion_text}")
-                }
-                Ok(None) => "No completions available".to_string(),
-                Err(e) => return Err(McpError::internal_error(format!("LSP error: {e}"), None)),
-            }
-        };
-
-        Ok(CallToolResult::success(vec![Content::text(content)]))
+        match tool_handlers::handle_completion(&self.lsp_client, request).await {
+            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+            Err(e) => Err(McpError::internal_error(e, None)),
+        }
     }
 
     #[tool(description = "Get compile errors and warnings for a file")]
@@ -157,50 +92,10 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<DiagnosticsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let content = {
-            let result = {
-                let lsp_client = self.lsp_client.lock().await;
-                lsp_client.diagnostics(&request.file_path).await
-            };
-
-            match result {
-                Ok(diagnostics) => {
-                    if diagnostics.is_empty() {
-                        "No diagnostics found".to_string()
-                    } else {
-                        let diagnostic_text = diagnostics
-                            .into_iter()
-                            .map(|diag| {
-                                let severity = diag
-                                    .severity
-                                    .map(|s| format!("{s:?}"))
-                                    .unwrap_or("Info".to_string());
-                                let range = format!(
-                                    "{}:{}-{}:{}",
-                                    diag.range.start.line,
-                                    diag.range.start.character,
-                                    diag.range.end.line,
-                                    diag.range.end.character
-                                );
-                                format!(
-                                    "[{}] {}: {} ({})",
-                                    severity,
-                                    range,
-                                    diag.message,
-                                    diag.source.unwrap_or_default()
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-
-                        format!("Diagnostics:\n{diagnostic_text}")
-                    }
-                }
-                Err(e) => return Err(McpError::internal_error(format!("LSP error: {e}"), None)),
-            }
-        };
-
-        Ok(CallToolResult::success(vec![Content::text(content)]))
+        match tool_handlers::handle_diagnostics(&self.lsp_client, request).await {
+            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+            Err(e) => Err(McpError::internal_error(e, None)),
+        }
     }
 
     #[tool(description = "Find definition of symbol at position")]
@@ -208,57 +103,9 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<GotoDefinitionRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = self.lsp_client.lock().await;
-
-        match lsp_client
-            .goto_definition(&request.file_path, request.line, request.column)
-            .await
-        {
-            Ok(Some(response)) => {
-                use lsp_types::GotoDefinitionResponse;
-                let locations = match response {
-                    GotoDefinitionResponse::Scalar(location) => vec![location],
-                    GotoDefinitionResponse::Array(locations) => locations,
-                    GotoDefinitionResponse::Link(links) => links
-                        .into_iter()
-                        .map(|link| lsp_types::Location {
-                            uri: link.target_uri,
-                            range: link.target_selection_range,
-                        })
-                        .collect(),
-                };
-
-                if locations.is_empty() {
-                    Ok(CallToolResult::success(vec![Content::text(
-                        "No definition found",
-                    )]))
-                } else {
-                    let definition_text = locations
-                        .into_iter()
-                        .map(|loc| {
-                            let path = loc
-                                .uri
-                                .to_file_path()
-                                .ok()
-                                .and_then(|p| p.to_str().map(|s| s.to_string()))
-                                .unwrap_or_else(|| loc.uri.to_string());
-                            format!(
-                                "Definition at: {}:{}:{}",
-                                path, loc.range.start.line, loc.range.start.character
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    Ok(CallToolResult::success(vec![Content::text(format!(
-                        "Found definitions:\n{definition_text}"
-                    ))]))
-                }
-            }
-            Ok(None) => Ok(CallToolResult::success(vec![Content::text(
-                "No definition found",
-            )])),
-            Err(e) => Err(McpError::internal_error(format!("LSP error: {e}"), None)),
+        match tool_handlers::handle_goto_definition(&self.lsp_client, request).await {
+            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+            Err(e) => Err(McpError::internal_error(e, None)),
         }
     }
 
@@ -1319,9 +1166,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // This prevents "Broken pipe" panic when stderr is not connected
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with_writer(std::io::sink)  // Use null writer - MCP doesn't need stderr logging
+        .with_writer(std::io::sink) // Use null writer - MCP doesn't need stderr logging
         .with_ansi(false)
-        .try_init();  // Silently ignore if already initialized
+        .try_init(); // Silently ignore if already initialized
 
     info!("Starting rust-analyzer MCP server");
 
@@ -1349,8 +1196,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use crate::models::{CloseDocumentRequest, DocumentSymbolsRequest, LspClientStatusRequest};
     use crate::lsp_client;
+    use crate::models::{CloseDocumentRequest, DocumentSymbolsRequest, LspClientStatusRequest};
     use std::path::PathBuf;
 
     #[test]

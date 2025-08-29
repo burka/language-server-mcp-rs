@@ -18,7 +18,7 @@ impl std::fmt::Display for LspError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LspError::RustAnalyzerNotFound => write!(
-                f, 
+                f,
                 "rust-analyzer not found. Please install rust-analyzer:\n\
                 • Run: rustup component add rust-analyzer\n\
                 • Or install via your package manager\n\
