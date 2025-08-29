@@ -1234,9 +1234,10 @@ mod tests {
     #[tokio::test]
     async fn test_timeout_constants_are_reasonable() {
         // Test that timeout constants are reasonable
-        assert!(DEFAULT_TIMEOUT_SECS > 0);
-        assert!(DEFAULT_TIMEOUT_SECS <= 120); // Should not be too long
-        assert!(DEFAULT_TIMEOUT_SECS >= 10); // Should be long enough for normal operations
+        // Validate constants at compile time using const assertions
+        const _: () = assert!(DEFAULT_TIMEOUT_SECS > 0);
+        const _: () = assert!(DEFAULT_TIMEOUT_SECS <= 120); // Should not be too long
+        const _: () = assert!(DEFAULT_TIMEOUT_SECS >= 10); // Should be long enough for normal operations
 
         // Test timeout duration creation
         let timeout_duration = Duration::from_secs(DEFAULT_TIMEOUT_SECS);

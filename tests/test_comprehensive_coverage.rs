@@ -31,6 +31,47 @@ fn has_content(result: &CallToolResult) -> bool {
     !result.content.is_empty()
 }
 
+/// Extract actual content text from CallToolResult for detailed validation
+fn extract_content_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|content| {
+            content.as_text().map(|text| text.text.clone())
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Enhanced validation that checks for specific semantic expectations
+fn validate_semantic_content(result: &CallToolResult, tool_name: &str, expected_patterns: &[&str]) -> bool {
+    let content_text = extract_content_text(result);
+    
+    // Check if content is meaningful (not just error messages)
+    if content_text.contains("No ") && content_text.contains(" available") {
+        println!("⚠️  {}: Got 'not available' response: {}", tool_name, content_text);
+        return false;
+    }
+    
+    // Check for any expected patterns
+    for pattern in expected_patterns {
+        if content_text.contains(pattern) {
+            println!("✅ {}: Found expected pattern '{}' in {} chars", tool_name, pattern, content_text.len());
+            return true;
+        }
+    }
+    
+    // If no patterns match but we have substantial content, it might still be valid
+    if content_text.len() > 50 && !content_text.starts_with("No ") {
+        println!("⚠️  {}: Got substantial content ({} chars) but no expected patterns", tool_name, content_text.len());
+        println!("   Sample: {}", &content_text[..std::cmp::min(100, content_text.len())]);
+        return true; // Give benefit of doubt for substantial content
+    }
+    
+    println!("❌ {}: No meaningful semantic content found", tool_name);
+    false
+}
+
 // ===== CORE TOOL TESTS (previously tested) =====
 
 #[tokio::test]
@@ -80,7 +121,20 @@ async fn test_comprehensive_diagnostics() {
 
     let result = server.diagnostics(Parameters(request)).await;
     match result {
-        Ok(tool_result) => assert!(has_content(&tool_result)),
+        Ok(tool_result) => {
+            // Enhanced validation: diagnostics should give meaningful status
+            let expected_patterns = [
+                "No diagnostics",          // Clean code case
+                "no diagnostic",           // Alternative clean case  
+                "error",                   // Compilation errors
+                "warning",                 // Compiler warnings
+                "diagnostic",              // Any diagnostic info
+            ];
+            
+            let is_semantic_valid = validate_semantic_content(&tool_result, "diagnostics", &expected_patterns);
+            assert!(is_semantic_valid, "Diagnostics should provide clear compilation status");
+            assert!(has_content(&tool_result)); // Still keep basic check
+        },
         Err(e) => println!("Diagnostics error (acceptable): {:?}", e),
     }
 }
@@ -240,8 +294,23 @@ async fn test_comprehensive_document_symbols() {
 
     let result = server.document_symbols(Parameters(request)).await;
     match result {
-        Ok(tool_result) => assert!(has_content(&tool_result)),
-        Err(e) => println!("Document symbols error (acceptable): {:?}", e),
+        Ok(tool_result) => {
+            // Enhanced validation: check for specific expected symbols
+            let expected_patterns = [
+                "Args [Struct]",           // Should find Args struct definition
+                "main [Function]",         // Should find main function
+                "symbols total",           // Should have symbol count info
+                "workspace_root",          // Should find workspace_root references
+            ];
+            
+            let is_semantic_valid = validate_semantic_content(&tool_result, "document_symbols", &expected_patterns);
+            assert!(is_semantic_valid, "Document symbols should contain meaningful structural information");
+            assert!(has_content(&tool_result)); // Still keep basic check
+        },
+        Err(e) => {
+            println!("Document symbols error (acceptable): {:?}", e);
+            // For now, don't panic on error to maintain compatibility
+        }
     }
 }
 

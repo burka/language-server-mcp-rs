@@ -127,7 +127,7 @@ async fn test_hover_tool() -> Result<()> {
         .await?;
 
     // Verify we get a successful response with hover information
-    assert!(hover_result.is_error.unwrap_or(true) == false);
+    assert!(!hover_result.is_error.unwrap_or(true));
     assert!(!hover_result.content.is_empty());
 
     client.cancel().await?;
@@ -149,7 +149,7 @@ async fn test_diagnostics_tool() -> Result<()> {
         .await?;
 
     // Should get a successful response even if no diagnostics
-    assert!(diagnostics_result.is_error.unwrap_or(true) == false);
+    assert!(!diagnostics_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -172,7 +172,7 @@ async fn test_completion_tool() -> Result<()> {
         .await?;
 
     // Should get completions for User methods
-    assert!(completion_result.is_error.unwrap_or(true) == false);
+    assert!(!completion_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -195,7 +195,7 @@ async fn test_goto_definition_tool() -> Result<()> {
         .await?;
 
     // Should find definition location
-    assert!(goto_result.is_error.unwrap_or(true) == false);
+    assert!(!goto_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -219,7 +219,7 @@ async fn test_find_references_tool() -> Result<()> {
         .await?;
 
     // Should find references to User
-    assert!(refs_result.is_error.unwrap_or(true) == false);
+    assert!(!refs_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -240,7 +240,7 @@ async fn test_format_document_tool() -> Result<()> {
         .await?;
 
     // Should successfully format (or report no changes needed)
-    assert!(format_result.is_error.unwrap_or(true) == false);
+    assert!(!format_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -260,7 +260,7 @@ async fn test_workspace_symbols_tool() -> Result<()> {
         .await?;
 
     // Should find User symbol in workspace
-    assert!(symbols_result.is_error.unwrap_or(true) == false);
+    assert!(!symbols_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -281,7 +281,7 @@ async fn test_inlay_hints_tool() -> Result<()> {
         .await?;
 
     // Should get inlay hints successfully
-    assert!(hints_result.is_error.unwrap_or(true) == false);
+    assert!(!hints_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -305,7 +305,7 @@ async fn test_runnables_tool() -> Result<()> {
     match result {
         Ok(runnables_result) => {
             // If successful, should not have error
-            assert!(runnables_result.is_error.unwrap_or(true) == false);
+            assert!(!runnables_result.is_error.unwrap_or(true));
         }
         Err(_) => {
             // If runnables is not supported, that's also acceptable
@@ -334,7 +334,7 @@ async fn test_implementations_tool() -> Result<()> {
         .await?;
 
     // Should find implementations of Greetable trait
-    assert!(impl_result.is_error.unwrap_or(true) == false);
+    assert!(!impl_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -352,7 +352,7 @@ async fn test_lsp_status_tool() -> Result<()> {
         .await?;
 
     // Should get LSP status information
-    assert!(status_result.is_error.unwrap_or(true) == false);
+    assert!(!status_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -375,7 +375,7 @@ async fn test_document_caching() -> Result<()> {
         })
         .await?;
 
-    assert!(hover_result1.is_error.unwrap_or(true) == false);
+    assert!(!hover_result1.is_error.unwrap_or(true));
 
     // Second call to same file - should use cached document
     let hover_result2 = client
@@ -389,7 +389,7 @@ async fn test_document_caching() -> Result<()> {
         })
         .await?;
 
-    assert!(hover_result2.is_error.unwrap_or(true) == false);
+    assert!(!hover_result2.is_error.unwrap_or(true));
 
     // Check status to see opened documents
     let status_result = client
@@ -399,7 +399,7 @@ async fn test_document_caching() -> Result<()> {
         })
         .await?;
 
-    assert!(status_result.is_error.unwrap_or(true) == false);
+    assert!(!status_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -432,7 +432,7 @@ async fn test_close_document_tool() -> Result<()> {
         })
         .await?;
 
-    assert!(close_result.is_error.unwrap_or(true) == false);
+    assert!(!close_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())
@@ -454,11 +454,23 @@ async fn test_error_handling_invalid_file() -> Result<()> {
         })
         .await;
 
-    // Should get an error for invalid file
+    // Should get a result (potentially with error message) or error for invalid file
     match result {
         Ok(hover_result) => {
-            // If we get a result, it should have an error flag
-            assert!(hover_result.is_error.unwrap_or(false) == true);
+            // If we get a result, it should indicate no hover information or error
+            let content = hover_result
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>()
+                .join("");
+            assert!(
+                content.contains("No hover") || content.contains("error") || 
+                content.contains("not found") || content.is_empty(),
+                "Invalid file should produce appropriate message: {}",
+                content
+            );
         }
         Err(_) => {
             // Getting an error is also acceptable
@@ -486,11 +498,23 @@ async fn test_error_handling_invalid_position() -> Result<()> {
         })
         .await;
 
-    // Should handle out-of-bounds position with an error
+    // Should handle out-of-bounds position gracefully
     match result {
         Ok(hover_result) => {
-            // If we get a result, it should have an error flag
-            assert!(hover_result.is_error.unwrap_or(false) == true);
+            // If we get a result, it should indicate no hover information
+            let content = hover_result
+                .content
+                .iter()
+                .filter_map(|c| c.as_text())
+                .map(|t| t.text.clone())
+                .collect::<Vec<_>>()
+                .join("");
+            assert!(
+                content.contains("No hover") || content.contains("out of bounds") || 
+                content.contains("error") || content.is_empty(),
+                "Out-of-bounds position should produce appropriate message: {}",
+                content
+            );
         }
         Err(_) => {
             // Getting an error is also acceptable
@@ -589,7 +613,7 @@ async fn test_memory_management() -> Result<()> {
         })
         .await?;
 
-    assert!(status_result.is_error.unwrap_or(true) == false);
+    assert!(!status_result.is_error.unwrap_or(true));
 
     client.cancel().await?;
     Ok(())

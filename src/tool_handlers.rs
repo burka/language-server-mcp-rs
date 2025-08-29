@@ -36,7 +36,7 @@ pub async fn handle_hover(
                 lsp_types::MarkedString::LanguageString(ls) => ls.value,
             }),
         },
-        Ok(None) => Ok("No hover information available".to_string()),
+        Ok(None) => Err("No hover information available".to_string()), // Return error to trigger retry
         Err(e) => Err(format!("LSP error: {e}")),
     }
 }
@@ -62,7 +62,7 @@ pub async fn handle_completion(
             };
 
             if items.is_empty() {
-                Ok("No completions available".to_string())
+                Err("No completions available".to_string()) // Return error to trigger retry
             } else {
                 let completions: Vec<String> = items
                     .into_iter()
@@ -79,7 +79,7 @@ pub async fn handle_completion(
                 Ok(format!("Completions:\n{}", completions.join("\n")))
             }
         }
-        Ok(None) => Ok("No completions available".to_string()),
+        Ok(None) => Err("No completions available".to_string()), // Return error to trigger retry
         Err(e) => Err(format!("LSP error: {e}")),
     }
 }

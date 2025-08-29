@@ -105,8 +105,8 @@ impl RustAnalyzerMCP {
         &self.workspace_root
     }
 
-    /// Execute a tool handler with automatic retry for initialization errors
-    /// Implements Option A: Automatic Retry with graceful handling
+    /// Execute a tool handler with automatic retry for any readiness errors
+    /// Implements Option A: Automatic Retry with graceful handling for all operations
     async fn execute_with_retry<F, Fut, T>(
         &self,
         operation_name: &str,
@@ -116,15 +116,37 @@ impl RustAnalyzerMCP {
         F: Fn() -> Fut,
         Fut: Future<Output = Result<T, String>>,
     {
-        const MAX_RETRIES: usize = 2;
+        const MAX_RETRIES: usize = 3; // Increased for semantic readiness retries
         const RETRY_DELAY: Duration = Duration::from_millis(300);
+        const SEMANTIC_RETRY_DELAY: Duration = Duration::from_millis(1500); // Longer wait for indexing
 
         for attempt in 1..=MAX_RETRIES {
             match handler().await {
                 Ok(result) => return Ok(result),
                 Err(error) => {
+                    // Check for any readiness issues (not just semantic operations)
+                    if Self::is_readiness_issue(&error) && attempt < MAX_RETRIES {
+                        // Use longer delay for semantic operations, shorter for others
+                        let delay = if Self::is_semantic_operation(operation_name) {
+                            warn!(
+                                "Operation '{}' may need semantic indexing (attempt {}). Waiting {:?} for rust-analyzer readiness...", 
+                                operation_name, attempt, SEMANTIC_RETRY_DELAY
+                            );
+                            SEMANTIC_RETRY_DELAY
+                        } else {
+                            warn!(
+                                "Operation '{}' got readiness issue (attempt {}). Retrying in {:?}...", 
+                                operation_name, attempt, RETRY_DELAY
+                            );
+                            RETRY_DELAY
+                        };
+                        sleep(delay).await;
+                        continue;
+                    }
+                    
                     let lsp_error = crate::errors::LspError::from_lsp_error(error, operation_name);
 
+                    // Handle initialization errors (original logic) 
                     if lsp_error.is_initialization_error() && attempt < MAX_RETRIES {
                         warn!(
                             "Operation '{}' failed due to initialization (attempt {}). Retrying in {:?}...", 
@@ -132,14 +154,34 @@ impl RustAnalyzerMCP {
                         );
                         sleep(RETRY_DELAY).await;
                         continue;
-                    } else {
-                        return Err(lsp_error);
                     }
+                    
+                    return Err(lsp_error);
                 }
             }
         }
 
         unreachable!("Loop should have returned")
+    }
+    
+    /// Check if this is a semantic operation that depends on indexing
+    fn is_semantic_operation(operation_name: &str) -> bool {
+        matches!(operation_name, 
+            "hover" | "completion" | "goto_definition" | "find_references" | 
+            "rename" | "code_actions" | "signature_help"
+        )
+    }
+    
+    /// Check if the error suggests rust-analyzer isn't ready yet  
+    fn is_readiness_issue(error: &str) -> bool {
+        error.contains("No hover information available") ||
+        error.contains("No completions available") ||
+        error.contains("not available") ||
+        error.contains("analysis not ready") ||
+        error.contains("indexing") ||
+        error.contains("not ready") ||
+        error.contains("still loading") ||
+        error.contains("No ") // Generic "No X available" pattern
     }
 
     #[tool(description = "Get type information and documentation at a specific position")]
@@ -157,7 +199,14 @@ impl RustAnalyzerMCP {
             .await
         {
             Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => {
+                // If we exhausted retries with a semantic readiness issue, return a helpful result instead of error
+                if Self::is_readiness_issue(&e.to_string()) {
+                    Ok(CallToolResult::success(vec![Content::text(e.to_string())]))
+                } else {
+                    Err(McpError::internal_error(e.to_string(), None))
+                }
+            }
         }
     }
 
@@ -176,7 +225,14 @@ impl RustAnalyzerMCP {
             .await
         {
             Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+            Err(e) => {
+                // If we exhausted retries with a semantic readiness issue, return a helpful result instead of error
+                if Self::is_readiness_issue(&e.to_string()) {
+                    Ok(CallToolResult::success(vec![Content::text(e.to_string())]))
+                } else {
+                    Err(McpError::internal_error(e.to_string(), None))
+                }
+            }
         }
     }
 

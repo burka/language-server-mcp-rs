@@ -103,7 +103,7 @@ async fn test_option_a_multiple_servers() {
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let server = RustAnalyzerMCP::new(workspace)
             .await
-            .expect(&format!("Failed to create server {}", i));
+            .unwrap_or_else(|_| panic!("Failed to create server {}", i));
         let creation_time = start.elapsed();
         creation_times.push(creation_time);
         servers.push(server);
