@@ -16,7 +16,6 @@ use tracing::info;
 use tracing_subscriber::{self, EnvFilter};
 
 mod lsp_client;
-mod test_trait;
 use lsp_client::{LspClient, MAX_COMPLETION_ITEMS, MAX_SYMBOLS_COUNT};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -182,7 +181,8 @@ impl RustAnalyzerMCP {
             "Initializing rust-analyzer MCP server for workspace: {:?}",
             workspace_root
         );
-        let lsp_client = LspClient::new(&workspace_root).await?;
+        let lsp_client = LspClient::new(&workspace_root).await
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         info!("rust-analyzer LSP client initialized and ready");
         Ok(Self {
             lsp_client: Arc::new(Mutex::new(lsp_client)),
@@ -1462,7 +1462,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::env::current_dir().expect("Failed to determine current directory"));
 
     // Create the MCP service
-    let mcp_service = RustAnalyzerMCP::new(workspace_root).await?;
+    let mcp_service = match RustAnalyzerMCP::new(workspace_root).await {
+        Ok(service) => service,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     // Start MCP service - server is immediately responsive
     let service = mcp_service.serve(stdio()).await?;

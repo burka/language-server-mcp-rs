@@ -15,6 +15,91 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Instant};
 use tracing::{debug, info, warn};
 
+// Custom error type for better user experience
+#[derive(Debug)]
+pub enum LspError {
+    RustAnalyzerNotFound,
+    WorkspaceNotFound(PathBuf),
+    InitializationFailed(String),
+    CommunicationError(String),
+    TimeoutError(String),
+    ProcessTerminated,
+    Other(String),
+}
+
+impl std::fmt::Display for LspError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LspError::RustAnalyzerNotFound => write!(
+                f, 
+                "rust-analyzer not found. Please install rust-analyzer:\n\
+                • Run: rustup component add rust-analyzer\n\
+                • Or install via your package manager\n\
+                • Ensure rust-analyzer is in your PATH"
+            ),
+            LspError::WorkspaceNotFound(path) => write!(
+                f,
+                "Rust workspace not found at: {}\n\
+                Please navigate to a directory containing Cargo.toml or a Rust workspace",
+                path.display()
+            ),
+            LspError::InitializationFailed(msg) => write!(
+                f,
+                "Failed to initialize rust-analyzer connection.\n\
+                This might be due to workspace issues or rust-analyzer version incompatibility.\n\
+                Details: {}",
+                msg
+            ),
+            LspError::CommunicationError(msg) => write!(
+                f,
+                "Communication error with rust-analyzer.\n\
+                The language server may have crashed or become unresponsive.\n\
+                Details: {}",
+                msg
+            ),
+            LspError::TimeoutError(operation) => write!(
+                f,
+                "Operation '{}' timed out.\n\
+                rust-analyzer may be analyzing a large codebase or having performance issues.\n\
+                Try again or check your workspace size.",
+                operation
+            ),
+            LspError::ProcessTerminated => write!(
+                f,
+                "rust-analyzer process terminated unexpectedly.\n\
+                This may be due to memory issues or internal errors in rust-analyzer."
+            ),
+            LspError::Other(msg) => write!(f, "rust-analyzer error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for LspError {}
+
+impl From<std::io::Error> for LspError {
+    fn from(error: std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => LspError::RustAnalyzerNotFound,
+            std::io::ErrorKind::PermissionDenied => LspError::Other(
+                "Permission denied. Check that rust-analyzer is executable and you have proper permissions.".to_string()
+            ),
+            _ => LspError::Other(format!("System error: {}", error)),
+        }
+    }
+}
+
+impl From<serde_json::Error> for LspError {
+    fn from(error: serde_json::Error) -> Self {
+        LspError::CommunicationError(format!("JSON parsing error: {}", error))
+    }
+}
+
+impl From<std::num::ParseIntError> for LspError {
+    fn from(error: std::num::ParseIntError) -> Self {
+        LspError::CommunicationError(format!("Failed to parse integer: {}", error))
+    }
+}
+
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const MAX_RESPONSE_SIZE_BYTES: usize = 40 * 1024; // 40KB ≈ 10k tokens (LLM-friendly)
 
@@ -72,21 +157,38 @@ fn get_max_response_size_for_method(method: &str) -> usize {
 }
 
 impl LspClient {
-    pub async fn new(workspace_root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(workspace_root: &Path) -> Result<Self, LspError> {
         info!("Starting rust-analyzer process");
 
         // Ensure workspace_root is absolute
         let workspace_root = if workspace_root.is_absolute() {
             workspace_root.to_path_buf()
         } else {
-            std::env::current_dir()?.join(workspace_root)
+            std::env::current_dir()
+                .map_err(|e| LspError::Other(format!("Failed to get current directory: {}", e)))?
+                .join(workspace_root)
         };
+
+        // Check if workspace appears to be a Rust project
+        if !workspace_root.join("Cargo.toml").exists() 
+            && !workspace_root.join("Cargo.lock").exists()
+            && !workspace_root.read_dir()
+                .map_err(|_| LspError::WorkspaceNotFound(workspace_root.clone()))?
+                .any(|entry| {
+                    entry.ok().map_or(false, |e| {
+                        e.file_name().to_string_lossy().ends_with(".rs") ||
+                        e.path().join("Cargo.toml").exists()
+                    })
+                }) {
+            warn!("Warning: {} doesn't appear to be a Rust workspace (no Cargo.toml or .rs files found)", workspace_root.display());
+        }
 
         let mut process = Command::new("rust-analyzer")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .spawn()?;
+            .spawn()
+            .map_err(LspError::from)?;
 
         let stdin = process.stdin.take().unwrap();
         let stdout = BufReader::new(process.stdout.take().unwrap());
@@ -108,7 +210,8 @@ impl LspClient {
         };
 
         // Initialize synchronously for now - we'll add async initialization later
-        client.initialize().await?;
+        client.initialize().await
+            .map_err(|e| LspError::InitializationFailed(e.to_string()))?;
         client.is_ready.store(true, Ordering::Relaxed);
 
         Ok(client)
@@ -262,7 +365,8 @@ impl LspClient {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
-        self.request("textDocument/hover", params).await
+        let timeout_duration = Duration::from_secs(QUICK_OPERATION_TIMEOUT);
+        self.request_with_timeout("textDocument/hover", params, timeout_duration).await
     }
 
     pub async fn completion(
@@ -309,8 +413,9 @@ impl LspClient {
             partial_result_params: PartialResultParams::default(),
         };
 
+        let timeout_duration = Duration::from_secs(QUICK_OPERATION_TIMEOUT);
         let response: DocumentDiagnosticReportResult =
-            self.request("textDocument/diagnostic", params).await?;
+            self.request_with_timeout("textDocument/diagnostic", params, timeout_duration).await?;
 
         match response {
             DocumentDiagnosticReportResult::Report(report) => match report {
@@ -411,7 +516,8 @@ impl LspClient {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
-        self.request("textDocument/formatting", params).await
+        let timeout_duration = Duration::from_secs(SLOW_OPERATION_TIMEOUT);
+        self.request_with_timeout("textDocument/formatting", params, timeout_duration).await
     }
 
     pub async fn rename(
@@ -438,7 +544,8 @@ impl LspClient {
             work_done_progress_params: WorkDoneProgressParams::default(),
         };
 
-        self.request("textDocument/rename", params).await
+        let timeout_duration = Duration::from_secs(COMPLEX_OPERATION_TIMEOUT);
+        self.request_with_timeout("textDocument/rename", params, timeout_duration).await
     }
 
     pub async fn code_actions(
@@ -473,7 +580,8 @@ impl LspClient {
             partial_result_params: PartialResultParams::default(),
         };
 
-        self.request("textDocument/codeAction", params).await
+        let timeout_duration = Duration::from_secs(COMPLEX_OPERATION_TIMEOUT);
+        self.request_with_timeout("textDocument/codeAction", params, timeout_duration).await
     }
 
     pub async fn workspace_symbols(
@@ -724,17 +832,16 @@ impl LspClient {
             },
             Err(_) => {
                 warn!("LSP request '{}' timed out after {:?}", method, timeout_duration);
-                return Err(
-                    format!("LSP request '{}' timed out after {:?}", method, timeout_duration).into(),
-                );
+                return Err(Box::new(LspError::TimeoutError(method.to_string())));
             }
         };
 
         if let Some(error) = response.get("error") {
-            return Err(format!("LSP error: {error:?}").into());
+            return Err(Box::new(LspError::CommunicationError(format!("LSP error: {error:?}"))));
         }
 
-        let result = response.get("result").ok_or("Missing result in response")?;
+        let result = response.get("result")
+            .ok_or_else(|| Box::new(LspError::CommunicationError("Missing result in response".to_string())) as Box<dyn std::error::Error>)?;
 
         // Check response size before deserializing (method-specific limits)
         let result_json = serde_json::to_string(result)?;
@@ -746,12 +853,12 @@ impl LspClient {
                 result_json.len(),
                 max_size
             );
-            return Err(format!(
+            return Err(Box::new(LspError::Other(format!(
                 "Response too large ({} bytes, max {} for {}). Try: smaller file, more specific query, or set RUST_ANALYZER_MCP_MAX_RESPONSE_SIZE env var.",
                 result_json.len(),
                 max_size,
                 method
-            ).into());
+            ))));
         }
 
         Ok(serde_json::from_value(result.clone())?)
@@ -785,7 +892,7 @@ impl LspClient {
         Ok(())
     }
 
-    async fn read_response(&self, expected_id: i64) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn read_response(&self, expected_id: i64) -> Result<Value, LspError> {
         debug!("read_response: Looking for response with ID {}", expected_id);
         let mut stdout = self.stdout.lock().await;
         let start_time = Instant::now();
@@ -795,7 +902,7 @@ impl LspClient {
             // Check if we've exceeded the overall timeout
             if start_time.elapsed() > overall_timeout {
                 debug!("read_response: Overall timeout exceeded after {:?}", overall_timeout);
-                return Err(format!("LSP read_response timed out after {:?}", overall_timeout).into());
+                return Err(LspError::TimeoutError("read_response".to_string()));
             }
 
             let mut header = String::new();
@@ -805,13 +912,13 @@ impl LspClient {
                 Ok(Ok(bytes_read)) => {
                     if bytes_read == 0 {
                         debug!("read_response: EOF reached, rust-analyzer process terminated");
-                        return Err("rust-analyzer process terminated or closed stdout".into());
+                        return Err(LspError::ProcessTerminated);
                     }
                     debug!("read_response: Read header line: {:?}", header.trim());
                 }, // Successfully read a line
                 Ok(Err(e)) => {
                     debug!("read_response: IO error reading header: {:?}", e);
-                    return Err(e.into());
+                    return Err(LspError::CommunicationError(format!("IO error reading header: {}", e)));
                 }, // IO error
                 Err(_) => {
                     // Individual read timed out, continue loop to check overall timeout

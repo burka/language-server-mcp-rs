@@ -56,16 +56,16 @@ pub fn test_function() {
     };
     
     // Test goto_definition - should work on MyStruct
-    let result = my_struct.do_something();
+    let _result = my_struct.do_something();
     
     // Test signature help - cursor inside function call
-    let output = complex_function("John", 30, true);
+    let _output = complex_function("John", 30, true);
     
     // Test code actions - intentional error for quick fix
     // let x: i32 = "not a number";  // Type mismatch error
     
     // Use trait
-    let trait_result = use_trait_object(&my_struct);
+    let _trait_result = use_trait_object(&my_struct);
 }
 
 // Test implementations - multiple implementations of Display
