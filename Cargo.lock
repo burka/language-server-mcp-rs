@@ -633,6 +633,7 @@ dependencies = [
  "futures",
  "glob",
  "lsp-types",
+ "once_cell",
  "rmcp",
  "schemars",
  "serde",

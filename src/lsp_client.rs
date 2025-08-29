@@ -42,6 +42,9 @@ pub struct LspClient {
     // Memory monitoring
     process_pid: Option<u32>,
     system: Mutex<System>,
+    // Crash detection and recovery
+    consecutive_failures: Arc<Mutex<u32>>,
+    last_restart: Arc<Mutex<Instant>>,
 }
 
 pub fn get_timeout_secs() -> u64 {
@@ -125,6 +128,8 @@ impl LspClient {
             timeout_secs: get_timeout_secs(),
             process_pid,
             system: Mutex::new(System::new()),
+            consecutive_failures: Arc::new(Mutex::new(0)),
+            last_restart: Arc::new(Mutex::new(Instant::now())),
         };
 
         // Initialize synchronously for now - we'll add async initialization later
@@ -143,6 +148,76 @@ impl LspClient {
 
     pub fn is_ready(&self) -> bool {
         self.is_ready.load(Ordering::Relaxed)
+    }
+
+    /// Restart the rust-analyzer process if it has crashed or is hanging
+    pub async fn restart(&mut self) -> Result<(), LspError> {
+        warn!("Restarting rust-analyzer due to failure or hang");
+        
+        // Record restart
+        *self.last_restart.lock().await = Instant::now();
+        
+        // Kill the old process
+        let _ = self.process.kill().await;
+        
+        // Clear state
+        self.is_ready.store(false, Ordering::Relaxed);
+        self.opened_documents.lock().await.clear();
+        *self.request_id.lock().await = 0;
+        
+        // Start new process
+        let mut process = Command::new("rust-analyzer")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(LspError::from)?;
+
+        let stdin = process.stdin.take().unwrap();
+        let stdout = BufReader::new(process.stdout.take().unwrap());
+        self.process_pid = process.id();
+        
+        self.process = process;
+        *self.stdin.lock().await = stdin;
+        *self.stdout.lock().await = stdout;
+        
+        // Re-initialize
+        self.initialize().await
+            .map_err(|e| LspError::InitializationFailed(e.to_string()))?;
+        
+        self.is_ready.store(true, Ordering::Relaxed);
+        info!("rust-analyzer restarted successfully");
+        
+        // Reset failure counter on successful restart
+        *self.consecutive_failures.lock().await = 0;
+        
+        Ok(())
+    }
+
+    /// Check if we should restart due to too many failures
+    async fn should_restart(&self) -> bool {
+        let failures = *self.consecutive_failures.lock().await;
+        let last_restart = *self.last_restart.lock().await;
+        
+        // Restart if:
+        // 1. More than 3 consecutive failures
+        // 2. At least 5 seconds since last restart (prevent restart loop)
+        failures > 3 && last_restart.elapsed() > Duration::from_secs(5)
+    }
+
+    /// Record a failure and potentially trigger restart
+    async fn record_failure(&self) {
+        let mut failures = self.consecutive_failures.lock().await;
+        *failures += 1;
+        
+        if *failures > 3 {
+            warn!("Multiple consecutive failures detected ({} failures)", *failures);
+        }
+    }
+
+    /// Reset failure counter on success
+    async fn reset_failures(&self) {
+        *self.consecutive_failures.lock().await = 0;
     }
 
     async fn initialize(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -746,20 +821,33 @@ impl LspClient {
         let response = match timeout(timeout_duration, self.read_response(request_id)).await {
             Ok(response) => {
                 debug!("LSP request '{}' completed successfully", method);
-                response?
+                match response {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        self.record_failure().await;
+                        return Err(Box::new(e));
+                    }
+                }
             },
             Err(_) => {
                 warn!("LSP request '{}' timed out after {:?}", method, timeout_duration);
+                self.record_failure().await;
                 return Err(Box::new(LspError::TimeoutError(method.to_string())));
             }
         };
 
         if let Some(error) = response.get("error") {
+            self.record_failure().await;
             return Err(Box::new(LspError::CommunicationError(format!("LSP error: {error:?}"))));
         }
 
-        let result = response.get("result")
-            .ok_or_else(|| Box::new(LspError::CommunicationError("Missing result in response".to_string())) as Box<dyn std::error::Error>)?;
+        let result = match response.get("result") {
+            Some(res) => res,
+            None => {
+                self.record_failure().await;
+                return Err(Box::new(LspError::CommunicationError("Missing result in response".to_string())));
+            }
+        };
 
         // Check response size before deserializing (method-specific limits)
         let result_json = serde_json::to_string(result)?;
@@ -779,6 +867,8 @@ impl LspClient {
             ))));
         }
 
+        // Success! Reset failure counter
+        self.reset_failures().await;
         Ok(serde_json::from_value(result.clone())?)
     }
 
