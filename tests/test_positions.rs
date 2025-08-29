@@ -6,11 +6,13 @@ pub mod main_rs {
     pub const FILE: &str = "src/main.rs";
 
     // Function definitions (reliable for goto_definition, hover)
-    pub const MAIN_FUNCTION: (u32, u32) = (1160, 10); // "async fn main()"
-    pub const HOVER_TOOL: (u32, u32) = (67, 14); // "#[tool] async fn hover"
+    pub const MAIN_FUNCTION: (u32, u32) = (18, 10); // "async fn main()" on line 19 (0-indexed is 18)
 
-    // Type names (good for hover, find_references)
-    pub const HOVER_REQUEST: (u32, u32) = (70, 41); // "HoverRequest" parameter
+    // Import statements
+    pub const RUST_ANALYZER_IMPORT: (u32, u32) = (3, 30); // "RustAnalyzerMCP" in import
+
+    // Struct usage
+    pub const ARGS_PARSE: (u32, u32) = (19, 20); // "Args::parse()" on line 20
 }
 
 /// Test positions in src/lsp_client.rs  
@@ -65,8 +67,8 @@ pub async fn validate_positions() -> Result<(), String> {
             main_rs::FILE,
             vec![
                 main_rs::MAIN_FUNCTION,
-                main_rs::HOVER_TOOL,
-                main_rs::HOVER_REQUEST,
+                main_rs::RUST_ANALYZER_IMPORT,
+                main_rs::ARGS_PARSE,
             ],
         ),
         (

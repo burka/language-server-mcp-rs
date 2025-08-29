@@ -4,7 +4,8 @@
 pub mod errors;
 pub mod lsp_client;
 pub mod models;
-pub mod tool_handlers;
+pub mod server;
+pub mod tool_handlers; // MCP server implementation
 
 // Re-export main types for testing
 pub use lsp_client::LspClient;
