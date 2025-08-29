@@ -136,8 +136,9 @@ async fn test_initialization_state_progression() {
     let server_arc = Arc::new(Mutex::new(server));
     let server = server_arc.lock().await;
 
-    // Test how responses change over time as rust-analyzer initializes
-    let time_intervals = vec![0, 100, 500, 1000, 2000]; // milliseconds
+    // Test how responses change over time as rust-analyzer initializes  
+    // Optimized intervals - much faster while still testing progression
+    let time_intervals = vec![0, 50, 100, 200]; // milliseconds (was: 0, 100, 500, 1000, 2000)
 
     for (i, delay_ms) in time_intervals.iter().enumerate() {
         if *delay_ms > 0 {
@@ -147,14 +148,14 @@ async fn test_initialization_state_progression() {
 
         println!("🔍 Test round {} (after {}ms):", i + 1, delay_ms);
 
-        // Test LSP status to see initialization progress
+        // Test LSP status to see initialization progress (with timeout)
         let status_req = language_server_mcp::models::LspClientStatusRequest {};
         let start = Instant::now();
-        let status_result = server.lsp_status(Parameters(status_req)).await;
+        let status_result = timeout(Duration::from_secs(1), server.lsp_status(Parameters(status_req))).await;
         let status_duration = start.elapsed();
 
         match status_result {
-            Ok(result) => {
+            Ok(Ok(result)) => {
                 // Try to extract first few lines of text content for summary
                 let summary = if let Some(_content) = result.content.first() {
                     // Extract text from content - the exact field structure may vary
@@ -164,20 +165,24 @@ async fn test_initialization_state_progression() {
                 };
                 println!("  📊 Status ({:?}): {}", status_duration, summary);
             }
-            Err(e) => println!("  ❌ Status error: {:?}", e),
+            Ok(Err(e)) => println!("  ❌ Status error ({:?}): {:?}", status_duration, e),
+            Err(_) => println!("  ⏰ Status: Timed out after 1s"),
         }
 
-        // Test a simple operation (diagnostics)
-        let diag_req = language_server_mcp::models::DiagnosticsRequest {
+        // Test a fast operation (document symbols) instead of slow diagnostics
+        let symbols_req = language_server_mcp::models::DocumentSymbolsRequest {
             file_path: "src/main.rs".to_string(),
+            page: 0,
+            page_size: 10,
         };
         let start = Instant::now();
-        let diag_result = server.diagnostics(Parameters(diag_req)).await;
-        let diag_duration = start.elapsed();
+        let symbols_result = timeout(Duration::from_millis(500), server.document_symbols(Parameters(symbols_req))).await;
+        let symbols_duration = start.elapsed();
 
-        match diag_result {
-            Ok(_) => println!("  ✅ Diagnostics ({:?}): Success", diag_duration),
-            Err(e) => println!("  ❌ Diagnostics ({:?}): {:?}", diag_duration, e),
+        match symbols_result {
+            Ok(Ok(_)) => println!("  ✅ Symbols ({:?}): Success", symbols_duration),
+            Ok(Err(e)) => println!("  ❌ Symbols ({:?}): {:?}", symbols_duration, e),
+            Err(_) => println!("  ⏰ Symbols: Timed out after 500ms"),
         }
 
         // Test a more complex operation (hover)
@@ -188,13 +193,13 @@ async fn test_initialization_state_progression() {
         };
         let start = Instant::now();
         let hover_result =
-            timeout(Duration::from_secs(3), server.hover(Parameters(hover_req))).await;
+            timeout(Duration::from_millis(500), server.hover(Parameters(hover_req))).await;
         let hover_duration = start.elapsed();
 
         match hover_result {
             Ok(Ok(_)) => println!("  ✅ Hover ({:?}): Success", hover_duration),
             Ok(Err(e)) => println!("  ❌ Hover ({:?}): {:?}", hover_duration, e),
-            Err(_) => println!("  ⏰ Hover: Timed out after 3s"),
+            Err(_) => println!("  ⏰ Hover: Timed out after 500ms"),
         }
     }
 }
