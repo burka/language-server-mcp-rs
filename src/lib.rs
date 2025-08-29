@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 // Library exports for testing
 pub mod errors;
 pub mod lsp_client;

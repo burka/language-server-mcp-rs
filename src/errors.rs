@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 use std::path::PathBuf;
 
 // Custom error type for better user experience

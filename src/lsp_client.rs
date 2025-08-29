@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 use lsp_types::{request::GotoImplementationParams, *};
 use serde_json::{json, Value};
 
@@ -108,7 +110,7 @@ impl LspClient {
             && !workspace_root.read_dir()
                 .map_err(|_| LspError::WorkspaceNotFound(workspace_root.clone()))?
                 .any(|entry| {
-                    entry.ok().map_or(false, |e| {
+                    entry.ok().is_some_and(|e| {
                         e.file_name().to_string_lossy().ends_with(".rs") ||
                         e.path().join("Cargo.toml").exists()
                     })
@@ -413,13 +415,13 @@ impl LspClient {
     pub async fn diagnostics(
         &self,
         file_path: &str,
-    ) -> Result<Vec<Diagnostic>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<Diagnostic>, LspError> {
         self.wait_for_ready().await;
         // Ensure document is open
-        self.open_document(file_path).await?;
+        self.open_document(file_path).await.map_err(|e| LspError::Other(e.to_string()))?;
         let params = DocumentDiagnosticParams {
             text_document: TextDocumentIdentifier {
-                uri: Url::from_file_path(file_path).unwrap(),
+                uri: self.path_to_url(file_path)?,
             },
             identifier: None,
             previous_result_id: None,
@@ -429,7 +431,9 @@ impl LspClient {
 
         let timeout_duration = Duration::from_secs(QUICK_OPERATION_TIMEOUT);
         let response: DocumentDiagnosticReportResult =
-            self.request_with_timeout("textDocument/diagnostic", params, timeout_duration).await?;
+            self.request_with_timeout("textDocument/diagnostic", params, timeout_duration)
+                .await
+                .map_err(|e| LspError::Other(e.to_string()))?;
 
         match response {
             DocumentDiagnosticReportResult::Report(report) => match report {

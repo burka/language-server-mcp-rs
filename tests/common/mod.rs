@@ -10,6 +10,7 @@ use tokio::time::timeout;
 
 // Since direct MCP server usage is complex due to macros, let's use the LspClient directly
 // We'll initialize it lazily on first use within the test runtime
+#[allow(dead_code)]
 pub static TEST_LSP_CLIENT: Lazy<Arc<Mutex<Option<language_server_mcp::lsp_client::LspClient>>>> = Lazy::new(|| {
     Arc::new(Mutex::new(None))
 });
@@ -28,19 +29,14 @@ where
     }
 }
 
-// Standard timeout for most operations
+// Standard timeout for most operations  
+#[allow(dead_code)]
 pub const STANDARD_TIMEOUT: Duration = Duration::from_secs(5);
-#[allow(dead_code)] // Available for future slow operations
-pub const SLOW_TIMEOUT: Duration = Duration::from_secs(10);
-
-#[allow(dead_code)] // Available for future use
-pub const MODELS_RS: &str = "src/models.rs";
-#[allow(dead_code)] // Available for future use  
-pub const ERRORS_RS: &str = "src/errors.rs";
-#[allow(dead_code)] // Available for trait testing when test_trait.rs exists
+#[allow(dead_code)]
 pub const TEST_TRAIT_RS: &str = "tests/test_trait.rs";
 
 // Get or initialize the test LSP client
+#[allow(dead_code)]
 pub async fn get_test_client() -> Arc<Mutex<Option<language_server_mcp::lsp_client::LspClient>>> {
     let client_option = TEST_LSP_CLIENT.clone();
     let mut client_guard = client_option.lock().await;
@@ -73,28 +69,10 @@ pub async fn get_test_client() -> Arc<Mutex<Option<language_server_mcp::lsp_clie
 }
 
 // Common test file paths in this project
+#[allow(dead_code)]
 pub mod test_files {
+    #[allow(dead_code)]
     pub const MAIN_RS: &str = "src/main.rs";
+    #[allow(dead_code)]
     pub const LSP_CLIENT_RS: &str = "src/lsp_client.rs";
-}
-
-// Helper assertions (available for future use)
-#[allow(dead_code)]
-pub fn assert_contains(response: &str, expected: &str, context: &str) {
-    assert!(
-        response.contains(expected),
-        "{}: Expected response to contain '{}', but got: {}",
-        context,
-        expected,
-        response
-    );
-}
-
-#[allow(dead_code)]
-pub fn assert_not_empty(response: &str, context: &str) {
-    assert!(
-        !response.is_empty(),
-        "{}: Expected non-empty response",
-        context
-    );
 }

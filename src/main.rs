@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 use clap::Parser;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},

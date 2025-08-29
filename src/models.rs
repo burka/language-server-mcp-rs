@@ -1,3 +1,5 @@
+#![deny(dead_code)]
+
 use schemars::JsonSchema;
 use serde::Deserialize;
 use crate::lsp_client::MAX_SYMBOLS_COUNT;
