@@ -137,25 +137,52 @@ async fn test_initialization_state_progression() {
     let server = server_arc.lock().await;
 
     // Test how responses change over time as rust-analyzer initializes  
-    // Optimized intervals - much faster while still testing progression
-    let time_intervals = vec![0, 50, 100, 200]; // milliseconds (was: 0, 100, 500, 1000, 2000)
+    // Adaptive intervals: quick initial checks, then longer waits for big projects
+    let mut cumulative_time = 0u64;
+    let mut round = 0;
+    let max_total_time = Duration::from_secs(8); // Reasonable limit for CI
+    let start_test_time = Instant::now();
 
-    for (i, delay_ms) in time_intervals.iter().enumerate() {
-        if *delay_ms > 0 {
-            println!("⏳ Waiting {}ms for further initialization...", delay_ms);
-            tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
+    loop {
+        round += 1;
+        
+        // Calculate next wait interval (progressive backoff)
+        let wait_ms = match round {
+            1 => 0,      // Immediate first test
+            2 => 50,     // Quick second check  
+            3 => 100,    // Short wait
+            4 => 200,    // Medium wait
+            5 => 500,    // Longer wait for bigger projects
+            6 => 1000,   // Even longer wait
+            _ => 2000,   // Max wait for really big projects
+        };
+        
+        if round > 1 {
+            if start_test_time.elapsed() + Duration::from_millis(wait_ms) > max_total_time {
+                println!("🛑 Stopping test after {} rounds to stay within {}s limit", round - 1, max_total_time.as_secs());
+                break;
+            }
+            println!("⏳ Waiting {}ms for further initialization...", wait_ms);
+            tokio::time::sleep(Duration::from_millis(wait_ms)).await;
+            cumulative_time += wait_ms;
         }
 
-        println!("🔍 Test round {} (after {}ms):", i + 1, delay_ms);
+        println!("🔍 Test round {} (after {}ms):", round, cumulative_time);
+
+        // Track success/failure for early termination
+        let mut successes = 0;
+        let mut total_tests = 0;
 
         // Test LSP status to see initialization progress (with timeout)
         let status_req = language_server_mcp::models::LspClientStatusRequest {};
         let start = Instant::now();
         let status_result = timeout(Duration::from_secs(1), server.lsp_status(Parameters(status_req))).await;
         let status_duration = start.elapsed();
+        total_tests += 1;
 
         match status_result {
             Ok(Ok(result)) => {
+                successes += 1;
                 // Try to extract first few lines of text content for summary
                 let summary = if let Some(_content) = result.content.first() {
                     // Extract text from content - the exact field structure may vary
@@ -178,9 +205,13 @@ async fn test_initialization_state_progression() {
         let start = Instant::now();
         let symbols_result = timeout(Duration::from_millis(500), server.document_symbols(Parameters(symbols_req))).await;
         let symbols_duration = start.elapsed();
+        total_tests += 1;
 
         match symbols_result {
-            Ok(Ok(_)) => println!("  ✅ Symbols ({:?}): Success", symbols_duration),
+            Ok(Ok(_)) => {
+                successes += 1;
+                println!("  ✅ Symbols ({:?}): Success", symbols_duration);
+            }
             Ok(Err(e)) => println!("  ❌ Symbols ({:?}): {:?}", symbols_duration, e),
             Err(_) => println!("  ⏰ Symbols: Timed out after 500ms"),
         }
@@ -195,12 +226,29 @@ async fn test_initialization_state_progression() {
         let hover_result =
             timeout(Duration::from_millis(500), server.hover(Parameters(hover_req))).await;
         let hover_duration = start.elapsed();
+        total_tests += 1;
 
         match hover_result {
-            Ok(Ok(_)) => println!("  ✅ Hover ({:?}): Success", hover_duration),
+            Ok(Ok(_)) => {
+                successes += 1;
+                println!("  ✅ Hover ({:?}): Success", hover_duration);
+            }
             Ok(Err(e)) => println!("  ❌ Hover ({:?}): {:?}", hover_duration, e),
             Err(_) => println!("  ⏰ Hover: Timed out after 500ms"),
         }
+
+        // Early termination conditions
+        if successes == total_tests && round >= 3 {
+            println!("🎉 All operations successful for 2+ rounds! Initialization appears complete.");
+            break;
+        }
+        
+        if round >= 10 {
+            println!("🛑 Reached maximum rounds (10) - stopping test");
+            break;
+        }
+
+        println!("  📈 Round {} summary: {}/{} operations successful", round, successes, total_tests);
     }
 }
 
