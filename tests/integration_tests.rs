@@ -455,8 +455,10 @@ async fn test_error_handling_invalid_file() -> Result<()> {
                 .collect::<Vec<_>>()
                 .join("");
             assert!(
-                content.contains("No hover") || content.contains("error") || 
-                content.contains("not found") || content.is_empty(),
+                content.contains("No hover")
+                    || content.contains("error")
+                    || content.contains("not found")
+                    || content.is_empty(),
                 "Invalid file should produce appropriate message: {}",
                 content
             );
@@ -499,8 +501,10 @@ async fn test_error_handling_invalid_position() -> Result<()> {
                 .collect::<Vec<_>>()
                 .join("");
             assert!(
-                content.contains("No hover") || content.contains("out of bounds") || 
-                content.contains("error") || content.is_empty(),
+                content.contains("No hover")
+                    || content.contains("out of bounds")
+                    || content.contains("error")
+                    || content.is_empty(),
                 "Out-of-bounds position should produce appropriate message: {}",
                 content
             );

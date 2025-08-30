@@ -136,7 +136,7 @@ async fn test_initialization_state_progression() {
     let server_arc = Arc::new(Mutex::new(server));
     let server = server_arc.lock().await;
 
-    // Test how responses change over time as rust-analyzer initializes  
+    // Test how responses change over time as rust-analyzer initializes
     // Adaptive intervals: quick initial checks, then patient waits for really large projects
     let mut cumulative_time = 0u64;
     let mut round = 0;
@@ -146,36 +146,40 @@ async fn test_initialization_state_progression() {
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(120); // Default: 2 minutes - give rust-analyzer the time it needs!
-    
+
     let max_total_time = Duration::from_secs(max_seconds);
     let start_test_time = Instant::now();
 
     loop {
         round += 1;
-        
+
         // Simple pattern: quick start, then steady 2s rhythm forever
-        let wait_ms = if round == 1 { 
+        let wait_ms = if round == 1 {
             0 // Immediate first test
-        } else if round <= 5 { 
+        } else if round <= 5 {
             50 * round as u64 // 50, 100, 150, 200, 250ms - quick ramp up
         } else {
             2000 // Check every 2s until rust-analyzer finishes - no rush! 🦀
         };
-        
+
         if round > 1 {
             if start_test_time.elapsed() + Duration::from_millis(wait_ms) > max_total_time {
-                println!("🛑 Stopping test after {} rounds to stay within {}s limit", round - 1, max_total_time.as_secs());
+                println!(
+                    "🛑 Stopping test after {} rounds to stay within {}s limit",
+                    round - 1,
+                    max_total_time.as_secs()
+                );
                 println!("   💭 This is totally normal for large projects - rust-analyzer is doing incredible work!");
                 break;
             }
-            
+
             let encouragement = match round {
                 2..=5 => "⏳ Warming up rust-analyzer...",
                 6..=10 => "⏳ Indexing dependencies...",
                 11..=20 => "⏳ Building symbol index (this takes time for large projects)...",
                 _ => "⏳ Checking every 2s - rust-analyzer will finish when it's ready...",
             };
-            
+
             println!("{} ({}ms)", encouragement, wait_ms);
             tokio::time::sleep(Duration::from_millis(wait_ms)).await;
             cumulative_time += wait_ms;
@@ -190,7 +194,11 @@ async fn test_initialization_state_progression() {
         // Test LSP status to see initialization progress (with timeout)
         let status_req = language_server_mcp::models::LspClientStatusRequest {};
         let start = Instant::now();
-        let status_result = timeout(Duration::from_secs(1), server.lsp_status(Parameters(status_req))).await;
+        let status_result = timeout(
+            Duration::from_secs(1),
+            server.lsp_status(Parameters(status_req)),
+        )
+        .await;
         let status_duration = start.elapsed();
         total_tests += 1;
 
@@ -217,7 +225,11 @@ async fn test_initialization_state_progression() {
             page_size: 10,
         };
         let start = Instant::now();
-        let symbols_result = timeout(Duration::from_millis(500), server.document_symbols(Parameters(symbols_req))).await;
+        let symbols_result = timeout(
+            Duration::from_millis(500),
+            server.document_symbols(Parameters(symbols_req)),
+        )
+        .await;
         let symbols_duration = start.elapsed();
         total_tests += 1;
 
@@ -237,8 +249,11 @@ async fn test_initialization_state_progression() {
             column: 10,
         };
         let start = Instant::now();
-        let hover_result =
-            timeout(Duration::from_millis(500), server.hover(Parameters(hover_req))).await;
+        let hover_result = timeout(
+            Duration::from_millis(500),
+            server.hover(Parameters(hover_req)),
+        )
+        .await;
         let hover_duration = start.elapsed();
         total_tests += 1;
 
@@ -253,17 +268,22 @@ async fn test_initialization_state_progression() {
 
         // Early termination conditions
         if successes == total_tests && round >= 3 {
-            println!("🎉 All operations successful for 2+ rounds! Initialization appears complete.");
+            println!(
+                "🎉 All operations successful for 2+ rounds! Initialization appears complete."
+            );
             break;
         }
-        
+
         if round >= 50 {
             println!("🛑 Reached maximum rounds (50) - rust-analyzer is still working but test limit reached");
             println!("   💭 For very large projects, this is normal! rust-analyzer is doing amazing work indexing everything.");
             break;
         }
 
-        println!("  📈 Round {} summary: {}/{} operations successful", round, successes, total_tests);
+        println!(
+            "  📈 Round {} summary: {}/{} operations successful",
+            round, successes, total_tests
+        );
     }
 }
 

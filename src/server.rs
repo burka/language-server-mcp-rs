@@ -51,18 +51,23 @@ impl RustAnalyzerMCP {
         Ok(server)
     }
 
-
     pub fn workspace_root(&self) -> &PathBuf {
         &self.workspace_root
     }
 
     /// Create a new RustAnalyzerMCP with throttling enabled via environment variables
     /// Sets RUST_ANALYZER_MCP_THROTTLE=1 and RUST_ANALYZER_MCP_THROTTLE_DELAY_MS
-    pub async fn with_throttling(workspace_root: PathBuf, throttle_delay_ms: u64) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn with_throttling(
+        workspace_root: PathBuf,
+        throttle_delay_ms: u64,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // Enable throttling via environment variables for this instance
         std::env::set_var("RUST_ANALYZER_MCP_THROTTLE", "1");
-        std::env::set_var("RUST_ANALYZER_MCP_THROTTLE_DELAY_MS", throttle_delay_ms.to_string());
-        
+        std::env::set_var(
+            "RUST_ANALYZER_MCP_THROTTLE_DELAY_MS",
+            throttle_delay_ms.to_string(),
+        );
+
         Self::new(workspace_root).await
     }
 
@@ -118,10 +123,10 @@ impl RustAnalyzerMCP {
                         sleep(delay).await;
                         continue;
                     }
-                    
+
                     let lsp_error = crate::errors::LspError::from_lsp_error(error, operation_name);
 
-                    // Handle initialization errors (original logic) 
+                    // Handle initialization errors (original logic)
                     if lsp_error.is_initialization_error() && attempt < MAX_RETRIES {
                         warn!(
                             "Operation '{}' failed due to initialization (attempt {}). Retrying in {:?}...", 
@@ -130,7 +135,7 @@ impl RustAnalyzerMCP {
                         sleep(RETRY_DELAY).await;
                         continue;
                     }
-                    
+
                     return Err(lsp_error);
                 }
             }
@@ -138,37 +143,44 @@ impl RustAnalyzerMCP {
 
         unreachable!("Loop should have returned")
     }
-    
+
     /// Check if this is a semantic operation that depends on indexing
     #[allow(dead_code)]
     fn is_semantic_operation(operation_name: &str) -> bool {
-        matches!(operation_name, 
-            "hover" | "completion" | "goto_definition" | "find_references" | 
-            "rename" | "code_actions" | "signature_help"
+        matches!(
+            operation_name,
+            "hover"
+                | "completion"
+                | "goto_definition"
+                | "find_references"
+                | "rename"
+                | "code_actions"
+                | "signature_help"
         )
     }
-    
+
     /// Check if the error suggests rust-analyzer isn't ready yet  
     #[allow(dead_code)]
     fn is_readiness_issue(error: &str) -> bool {
-        error.contains("No hover information available") ||
-        error.contains("No completions available") ||
-        error.contains("not available") ||
-        error.contains("analysis not ready") ||
-        error.contains("indexing") ||
-        error.contains("not ready") ||
-        error.contains("still loading") ||
-        error.contains("No ") // Generic "No X available" pattern
+        error.contains("No hover information available")
+            || error.contains("No completions available")
+            || error.contains("not available")
+            || error.contains("analysis not ready")
+            || error.contains("indexing")
+            || error.contains("not ready")
+            || error.contains("still loading")
+            || error.contains("No ") // Generic "No X available" pattern
     }
 
     /// Log timing information for tool calls
     fn log_tool_timing(&self, tool_name: &str, start_time: Instant, result: &str) {
         let elapsed = start_time.elapsed();
         let since_test_start = self.test_start_time.elapsed();
-        info!("🕐 TIMING: +{:?} {}ms {}: {}", 
-            since_test_start, 
+        info!(
+            "🕐 TIMING: +{:?} {}ms {}: {}",
+            since_test_start,
             elapsed.as_millis(),
-            tool_name, 
+            tool_name,
             result
         );
     }
@@ -184,16 +196,20 @@ impl RustAnalyzerMCP {
             column: request.column,
         };
         let result = self.rust_analyzer.hover(&request.file_path, position).await;
-        
+
         match result {
             Ok(Some(hover_info)) => {
                 self.log_tool_timing("hover", start_time, "ok");
-                Ok(CallToolResult::success(vec![Content::text(hover_info.content)]))
-            },
+                Ok(CallToolResult::success(vec![Content::text(
+                    hover_info.content,
+                )]))
+            }
             Ok(None) => {
                 self.log_tool_timing("hover", start_time, "no_info");
-                Ok(CallToolResult::success(vec![Content::text("No hover information available".to_string())]))
-            },
+                Ok(CallToolResult::success(vec![Content::text(
+                    "No hover information available".to_string(),
+                )]))
+            }
             Err(e) => {
                 // If we exhausted retries with a semantic readiness issue, return a helpful result instead of error
                 if e.is_informational() {
@@ -222,25 +238,35 @@ impl RustAnalyzerMCP {
             line: request.line,
             column: request.column,
         };
-        let result = self.rust_analyzer.completion(&request.file_path, position).await;
-        
+        let result = self
+            .rust_analyzer
+            .completion(&request.file_path, position)
+            .await;
+
         match result {
             Ok(completions) => {
                 if completions.is_empty() {
                     self.log_tool_timing("completion", start_time, "no_completions");
-                    Ok(CallToolResult::success(vec![Content::text("No completions available".to_string())]))
+                    Ok(CallToolResult::success(vec![Content::text(
+                        "No completions available".to_string(),
+                    )]))
                 } else {
                     let formatted_completions: Vec<String> = completions
                         .into_iter()
                         .map(|item| {
-                            format!("- {} [{}]: {}", item.label, item.kind, item.detail.unwrap_or_default())
+                            format!(
+                                "- {} [{}]: {}",
+                                item.label,
+                                item.kind,
+                                item.detail.unwrap_or_default()
+                            )
                         })
                         .collect();
                     let content = format!("Completions:\n{}", formatted_completions.join("\n"));
                     self.log_tool_timing("completion", start_time, "ok");
                     Ok(CallToolResult::success(vec![Content::text(content)]))
                 }
-            },
+            }
             Err(e) => {
                 // If we exhausted retries with a semantic readiness issue, return a helpful result instead of error
                 if e.is_informational() {
@@ -271,32 +297,38 @@ impl RustAnalyzerMCP {
             Ok(diagnostics) => {
                 if diagnostics.is_empty() {
                     self.log_tool_timing("diagnostics", start_time, "ok");
-                    Ok(CallToolResult::success(vec![Content::text("No diagnostics found".to_string())]))
+                    Ok(CallToolResult::success(vec![Content::text(
+                        "No diagnostics found".to_string(),
+                    )]))
                 } else {
                     let formatted_diagnostics: Vec<String> = diagnostics
                         .into_iter()
                         .map(|diag| {
                             let severity = match diag.severity {
                                 crate::domain::DiagnosticSeverity::Error => "ERROR",
-                                crate::domain::DiagnosticSeverity::Warning => "WARNING", 
+                                crate::domain::DiagnosticSeverity::Warning => "WARNING",
                                 crate::domain::DiagnosticSeverity::Information => "INFO",
                                 crate::domain::DiagnosticSeverity::Hint => "HINT",
                             };
-                            format!("{}:{}-{}: {}: {}", 
-                                diag.range.start.line + 1, 
+                            format!(
+                                "{}:{}-{}: {}: {}",
+                                diag.range.start.line + 1,
                                 diag.range.start.column + 1,
                                 diag.range.end.column + 1,
                                 severity,
-                                diag.message)
+                                diag.message
+                            )
                         })
                         .collect();
-                    let content = format!("Diagnostics ({}):\n{}", 
-                        formatted_diagnostics.len(), 
-                        formatted_diagnostics.join("\n"));
+                    let content = format!(
+                        "Diagnostics ({}):\n{}",
+                        formatted_diagnostics.len(),
+                        formatted_diagnostics.join("\n")
+                    );
                     self.log_tool_timing("diagnostics", start_time, "ok");
                     Ok(CallToolResult::success(vec![Content::text(content)]))
                 }
-            },
+            }
             Err(e) => {
                 let error_type = if e.to_string().contains("content modified") {
                     "content_modified_error"
@@ -305,7 +337,7 @@ impl RustAnalyzerMCP {
                 };
                 self.log_tool_timing("diagnostics", start_time, error_type);
                 Err(e.to_mcp_error())
-            },
+            }
         }
     }
 
@@ -319,28 +351,35 @@ impl RustAnalyzerMCP {
             line: request.line,
             column: request.column,
         };
-        let result = self.rust_analyzer.goto_definition(&request.file_path, position).await;
+        let result = self
+            .rust_analyzer
+            .goto_definition(&request.file_path, position)
+            .await;
 
         match result {
             Ok(locations) => {
                 if locations.is_empty() {
                     self.log_tool_timing("goto_definition", start_time, "no_definitions");
-                    Ok(CallToolResult::success(vec![Content::text("No definition found".to_string())]))
+                    Ok(CallToolResult::success(vec![Content::text(
+                        "No definition found".to_string(),
+                    )]))
                 } else {
                     let formatted_locations: Vec<String> = locations
                         .into_iter()
                         .map(|loc| {
-                            format!("{}:{}:{}", 
+                            format!(
+                                "{}:{}:{}",
                                 loc.file_path,
                                 loc.range.start.line + 1,
-                                loc.range.start.column + 1)
+                                loc.range.start.column + 1
+                            )
                         })
                         .collect();
                     let content = format!("Definition(s):\n{}", formatted_locations.join("\n"));
                     self.log_tool_timing("goto_definition", start_time, "ok");
                     Ok(CallToolResult::success(vec![Content::text(content)]))
                 }
-            },
+            }
             Err(e) => {
                 let error_type = if e.to_string().contains("content modified") {
                     "content_modified_error"
@@ -349,7 +388,7 @@ impl RustAnalyzerMCP {
                 };
                 self.log_tool_timing("goto_definition", start_time, error_type);
                 Err(e.to_mcp_error())
-            },
+            }
         }
     }
 
@@ -362,8 +401,12 @@ impl RustAnalyzerMCP {
             line: request.line,
             column: request.column,
         };
-        
-        match self.rust_analyzer.find_references(&request.file_path, position, request.include_declaration).await {
+
+        match self
+            .rust_analyzer
+            .find_references(&request.file_path, position, request.include_declaration)
+            .await
+        {
             Ok(locations) => {
                 if locations.is_empty() {
                     Ok(CallToolResult::success(vec![Content::text(
@@ -398,9 +441,7 @@ impl RustAnalyzerMCP {
         Parameters(request): Parameters<FormatRequest>,
     ) -> Result<CallToolResult, McpError> {
         match self.rust_analyzer.format_document(&request.file_path).await {
-            Ok(Some(message)) => {
-                Ok(CallToolResult::success(vec![Content::text(message)]))
-            }
+            Ok(Some(message)) => Ok(CallToolResult::success(vec![Content::text(message)])),
             Ok(None) => Ok(CallToolResult::success(vec![Content::text(
                 "No formatting changes needed",
             )])),
@@ -417,7 +458,11 @@ impl RustAnalyzerMCP {
             line: request.line,
             column: request.column,
         };
-        match self.rust_analyzer.rename(&request.file_path, position, &request.new_name).await {
+        match self
+            .rust_analyzer
+            .rename(&request.file_path, position, &request.new_name)
+            .await
+        {
             Ok(message) => Ok(CallToolResult::success(vec![Content::text(message)])),
             Err(e) => Err(e.to_mcp_error()),
         }
@@ -515,14 +560,25 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<DocumentSymbolsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        match self.rust_analyzer.document_symbols(&request.file_path).await {
+        match self
+            .rust_analyzer
+            .document_symbols(&request.file_path)
+            .await
+        {
             Ok(symbols) => {
                 let symbols_text = symbols
                     .into_iter()
-                    .map(|symbol| format!("• {} [{:?}] at line {}", symbol.name, symbol.kind, symbol.location.range.start.line + 1))
+                    .map(|symbol| {
+                        format!(
+                            "• {} [{:?}] at line {}",
+                            symbol.name,
+                            symbol.kind,
+                            symbol.location.range.start.line + 1
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("\n");
-                
+
                 if symbols_text.is_empty() {
                     Ok(CallToolResult::success(vec![Content::text(
                         "No symbols found in document",
@@ -629,7 +685,9 @@ impl RustAnalyzerMCP {
             .implementations(&request.file_path, position)
             .await
         {
-            Ok(implementations_text) => Ok(CallToolResult::success(vec![Content::text(implementations_text)])),
+            Ok(implementations_text) => Ok(CallToolResult::success(vec![Content::text(
+                implementations_text,
+            )])),
             Err(e) => Err(e.to_mcp_error()),
         }
     }
@@ -640,8 +698,13 @@ impl RustAnalyzerMCP {
         Parameters(_request): Parameters<LspClientStatusRequest>,
     ) -> Result<CallToolResult, McpError> {
         // Get status information from domain service
-        let (is_ready, opened_count, (memory_mb_val, _doc_count)) = self.rust_analyzer.get_lsp_status().await;
-        let memory_mb = if memory_mb_val > 0 { Some(memory_mb_val) } else { None };
+        let (is_ready, opened_count, (memory_mb_val, _doc_count)) =
+            self.rust_analyzer.get_lsp_status().await;
+        let memory_mb = if memory_mb_val > 0 {
+            Some(memory_mb_val)
+        } else {
+            None
+        };
 
         let mut status_info = vec![
             format!(
@@ -696,11 +759,11 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<CloseDocumentRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let (opened_count_before, opened_count_after, close_result): (usize, usize, Result<(), String>) = match self
-            .rust_analyzer
-            .close_document(&request.file_path)
-            .await
-        {
+        let (opened_count_before, opened_count_after, close_result): (
+            usize,
+            usize,
+            Result<(), String>,
+        ) = match self.rust_analyzer.close_document(&request.file_path).await {
             Ok((before, after)) => (before, after, Ok(())),
             Err(e) => {
                 // In case of error, we can't get the counts, so use 0 and return the error message

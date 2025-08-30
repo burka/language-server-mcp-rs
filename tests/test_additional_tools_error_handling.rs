@@ -19,17 +19,20 @@ async fn create_test_server() -> RustAnalyzerMCP {
 
 /// Test with extremely short timeout (1 microsecond) to verify timeout handling
 /// Note: Operations may complete faster than 1μs, which is actually good performance!
-async fn test_timeout_behavior<T, F>(
-    operation_name: &str,
-    future: F,
-) -> Result<String, String>
+async fn test_timeout_behavior<T, F>(operation_name: &str, future: F) -> Result<String, String>
 where
     F: std::future::Future<Output = Result<T, McpError>>,
 {
     match timeout(Duration::from_micros(1), future).await {
-        Ok(Ok(_)) => Ok(format!("{} completed in under 1μs (excellent performance!)", operation_name)),
+        Ok(Ok(_)) => Ok(format!(
+            "{} completed in under 1μs (excellent performance!)",
+            operation_name
+        )),
         Ok(Err(e)) => Ok(format!("{} returned error: {}", operation_name, e)),
-        Err(_) => Ok(format!("{} timed out at 1μs (as expected for slow operations)", operation_name)),
+        Err(_) => Ok(format!(
+            "{} timed out at 1μs (as expected for slow operations)",
+            operation_name
+        )),
     }
 }
 
@@ -120,12 +123,10 @@ async fn test_selection_range_error_scenarios() {
     // Test 2: Invalid positions
     let invalid_positions = SelectionRangeRequest {
         file_path: "src/main.rs".to_string(),
-        positions: vec![
-            PositionInfo {
-                line: 999999,
-                column: 999999,
-            },
-        ],
+        positions: vec![PositionInfo {
+            line: 999999,
+            column: 999999,
+        }],
     };
 
     match server.selection_range(Parameters(invalid_positions)).await {
@@ -147,9 +148,10 @@ async fn test_selection_range_error_scenarios() {
     // Test 3: Microsecond timeout
     let timeout_request = SelectionRangeRequest {
         file_path: "src/main.rs".to_string(),
-        positions: vec![
-            PositionInfo { line: 20, column: 10 },
-        ],
+        positions: vec![PositionInfo {
+            line: 20,
+            column: 10,
+        }],
     };
 
     let timeout_result = test_timeout_behavior(
@@ -295,11 +297,8 @@ async fn test_runnables_error_scenarios() {
         file_path: "src/main.rs".to_string(),
     };
 
-    let timeout_result = test_timeout_behavior(
-        "runnables",
-        server.runnables(Parameters(timeout_request)),
-    )
-    .await;
+    let timeout_result =
+        test_timeout_behavior("runnables", server.runnables(Parameters(timeout_request))).await;
 
     match timeout_result {
         Ok(msg) => println!("✅ Timeout behavior test: {}", msg),
@@ -425,7 +424,9 @@ async fn test_lsp_status_error_scenarios() {
                 .collect::<Vec<_>>()
                 .join("");
             assert!(
-                content.contains("Status") || content.contains("running") || content.contains("Ready"),
+                content.contains("Status")
+                    || content.contains("running")
+                    || content.contains("Ready"),
                 "Status should have meaningful info: {}",
                 content
             );

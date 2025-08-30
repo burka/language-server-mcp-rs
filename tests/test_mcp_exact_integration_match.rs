@@ -48,12 +48,12 @@ fn get_test_file_path() -> String {
 #[tokio::test]
 async fn test_exact_integration_test_parameters() {
     println!("🎯 Testing EXACT same parameters as failing integration test...");
-    
+
     let client = create_test_client()
         .await
         .expect("Failed to create MCP client");
     let test_file = get_test_file_path();
-    
+
     println!("📁 Test file: {}", test_file);
     println!("📍 Position: line 12, column 7 (struct User)");
 
@@ -73,7 +73,7 @@ async fn test_exact_integration_test_parameters() {
         Ok(_) => {
             println!("✅ EXACT integration test parameters: SUCCESS!");
             println!("   💡 This proves the issue is NOT in the core MCP functionality");
-        },
+        }
         Err(e) => {
             println!("❌ EXACT integration test parameters: FAILED - {}", e);
             if e.to_string().contains("content modified") {

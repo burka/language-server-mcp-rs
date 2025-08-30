@@ -37,7 +37,7 @@ async fn create_test_client() -> Result<RunningService<RoleClient, ()>> {
 #[tokio::test]
 async fn test_mcp_transport_simple_operations() {
     println!("🔍 Testing MCP transport with simple operations first...");
-    
+
     let client = create_test_client()
         .await
         .expect("Failed to create MCP client");
@@ -57,7 +57,7 @@ async fn test_mcp_transport_simple_operations() {
             if let Some(_content) = result.content.first() {
                 println!("   Status includes content");
             }
-        },
+        }
         Err(e) => {
             println!("❌ lsp_status: FAILED - {}", e);
             if e.to_string().contains("content modified") {
@@ -113,10 +113,10 @@ async fn test_mcp_transport_simple_operations() {
     println!("\n💡 MCP transport analysis complete!");
 }
 
-#[tokio::test] 
+#[tokio::test]
 async fn test_mcp_hover_after_delay() {
     println!("🕐 Testing MCP hover after initial delay...");
-    
+
     let client = create_test_client()
         .await
         .expect("Failed to create MCP client");

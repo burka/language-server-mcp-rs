@@ -23,8 +23,8 @@ pub mod lsp_client_rs {
     pub const LSP_CLIENT_STRUCT: (u32, u32) = (36, 11); // "LspClient" in struct definition
 
     // Method definitions
-    pub const NEW_METHOD: (u32, u32) = (96, 13); // "new" in "pub async fn new" (0-based)
-    pub const HOVER_METHOD: (u32, u32) = (369, 13); // "hover" in "pub async fn hover" (0-based)
+    pub const NEW_METHOD: (u32, u32) = (97, 13); // "new" in "pub async fn new" (0-based)
+    pub const HOVER_METHOD: (u32, u32) = (380, 13); // "hover" in "pub async fn hover" (0-based)
 }
 
 /// Test positions in src/models.rs

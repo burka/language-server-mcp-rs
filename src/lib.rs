@@ -1,7 +1,7 @@
 #![deny(dead_code)]
 
 // Library exports for testing
-pub mod domain;   // Domain service layer (business logic)
+pub mod domain; // Domain service layer (business logic)
 pub mod errors;
 pub mod lsp_client;
 pub mod lsp_handler;

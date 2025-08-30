@@ -1,8 +1,8 @@
 #![deny(dead_code)]
 
+use rmcp::ErrorData as McpError;
 use std::path::PathBuf;
 use std::time::Duration;
-use rmcp::ErrorData as McpError;
 
 // Enhanced typed error system following Rust best practices
 #[derive(Debug, thiserror::Error)]
@@ -153,9 +153,7 @@ impl LspError {
                 details: format!("LSP error: {}", error),
             }
         } else {
-            LspError::Other {
-                message: error,
-            }
+            LspError::Other { message: error }
         }
     }
 
@@ -169,8 +167,8 @@ impl From<std::io::Error> for LspError {
     fn from(error: std::io::Error) -> Self {
         match error.kind() {
             std::io::ErrorKind::NotFound => LspError::RustAnalyzerNotFound,
-            std::io::ErrorKind::PermissionDenied => LspError::Other { 
-                message: "Permission denied. Check that rust-analyzer is executable and you have proper permissions.".to_string() 
+            std::io::ErrorKind::PermissionDenied => LspError::Other {
+                message: "Permission denied. Check that rust-analyzer is executable and you have proper permissions.".to_string()
             },
             _ => LspError::Other { message: format!("System error: {}", error) },
         }
@@ -179,13 +177,17 @@ impl From<std::io::Error> for LspError {
 
 impl From<serde_json::Error> for LspError {
     fn from(error: serde_json::Error) -> Self {
-        LspError::CommunicationError { details: format!("JSON parsing error: {}", error) }
+        LspError::CommunicationError {
+            details: format!("JSON parsing error: {}", error),
+        }
     }
 }
 
 impl From<std::num::ParseIntError> for LspError {
     fn from(error: std::num::ParseIntError) -> Self {
-        LspError::CommunicationError { details: format!("Failed to parse integer: {}", error) }
+        LspError::CommunicationError {
+            details: format!("Failed to parse integer: {}", error),
+        }
     }
 }
 

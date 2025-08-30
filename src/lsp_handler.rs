@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-/// Central handler for ALL LSP operations with unified error handling, 
+/// Central handler for ALL LSP operations with unified error handling,
 /// retry logic, throttling, and logging
 pub struct LspCallHandler {
     client: Arc<Mutex<LspClient>>,
@@ -40,7 +40,7 @@ impl LspCallHandler {
         Fut: Future<Output = Result<T, String>>,
     {
         let start_time = Instant::now();
-        
+
         // 1. THROTTLING (if enabled)
         if is_throttle_enabled() {
             self.throttle
@@ -121,7 +121,10 @@ impl LspCallHandler {
                     // Convert readiness issues to successful responses with helpful message
                     if Self::is_readiness_issue(&error) {
                         // This becomes a successful MCP response, not an error
-                        return Err(McpError::internal_error(format!("readiness_response:{}", error), None));
+                        return Err(McpError::internal_error(
+                            format!("readiness_response:{}", error),
+                            None,
+                        ));
                     }
 
                     return Err(McpError::internal_error(error, None));
@@ -149,8 +152,13 @@ impl LspCallHandler {
     fn is_semantic_operation(operation_name: &str) -> bool {
         matches!(
             operation_name,
-            "hover" | "completion" | "goto_definition" | "find_references"
-                | "rename" | "code_actions" | "signature_help"
+            "hover"
+                | "completion"
+                | "goto_definition"
+                | "find_references"
+                | "rename"
+                | "code_actions"
+                | "signature_help"
         )
     }
 
@@ -168,7 +176,8 @@ impl LspCallHandler {
 }
 
 // Throttling utilities - centralized
-static LSP_THROTTLE: std::sync::OnceLock<MultiRateLimiter<&'static str>> = std::sync::OnceLock::new();
+static LSP_THROTTLE: std::sync::OnceLock<MultiRateLimiter<&'static str>> =
+    std::sync::OnceLock::new();
 
 pub fn get_lsp_throttle() -> &'static MultiRateLimiter<&'static str> {
     LSP_THROTTLE.get_or_init(|| {

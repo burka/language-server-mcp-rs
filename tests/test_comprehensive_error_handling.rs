@@ -19,17 +19,20 @@ async fn create_test_server() -> RustAnalyzerMCP {
 
 /// Test with extremely short timeout (1 microsecond) to verify timeout handling
 /// Note: Operations may complete faster than 1μs, which is actually good performance!
-async fn test_timeout_behavior<T, F>(
-    operation_name: &str,
-    future: F,
-) -> Result<String, String>
+async fn test_timeout_behavior<T, F>(operation_name: &str, future: F) -> Result<String, String>
 where
     F: std::future::Future<Output = Result<T, McpError>>,
 {
     match timeout(Duration::from_micros(1), future).await {
-        Ok(Ok(_)) => Ok(format!("{} completed in under 1μs (excellent performance!)", operation_name)),
+        Ok(Ok(_)) => Ok(format!(
+            "{} completed in under 1μs (excellent performance!)",
+            operation_name
+        )),
         Ok(Err(e)) => Ok(format!("{} returned error: {}", operation_name, e)),
-        Err(_) => Ok(format!("{} timed out at 1μs (as expected for slow operations)", operation_name)),
+        Err(_) => Ok(format!(
+            "{} timed out at 1μs (as expected for slow operations)",
+            operation_name
+        )),
     }
 }
 
@@ -55,7 +58,9 @@ async fn test_hover_error_scenarios() {
                 .collect::<Vec<_>>()
                 .join("");
             assert!(
-                content.contains("error") || content.contains("not found") || content.contains("No hover"),
+                content.contains("error")
+                    || content.contains("not found")
+                    || content.contains("No hover"),
                 "Invalid file should produce clear error: {}",
                 content
             );
@@ -101,11 +106,8 @@ async fn test_hover_error_scenarios() {
         column: 10,
     };
 
-    let timeout_result = test_timeout_behavior(
-        "hover",
-        server.hover(Parameters(timeout_request)),
-    )
-    .await;
+    let timeout_result =
+        test_timeout_behavior("hover", server.hover(Parameters(timeout_request))).await;
 
     match timeout_result {
         Ok(msg) => println!("✅ Timeout behavior test: {}", msg),
@@ -135,7 +137,9 @@ async fn test_completion_error_scenarios() {
                 .collect::<Vec<_>>()
                 .join("");
             assert!(
-                content.contains("error") || content.contains("not found") || content.contains("No completion"),
+                content.contains("error")
+                    || content.contains("not found")
+                    || content.contains("No completion"),
                 "Invalid file should produce clear error: {}",
                 content
             );
@@ -153,11 +157,8 @@ async fn test_completion_error_scenarios() {
         column: 10,
     };
 
-    let timeout_result = test_timeout_behavior(
-        "completion",
-        server.completion(Parameters(timeout_request)),
-    )
-    .await;
+    let timeout_result =
+        test_timeout_behavior("completion", server.completion(Parameters(timeout_request))).await;
 
     match timeout_result {
         Ok(msg) => println!("✅ Timeout behavior test: {}", msg),
@@ -319,7 +320,7 @@ async fn test_rename_error_scenarios() {
     let invalid_rename = RenameRequest {
         file_path: "src/main.rs".to_string(),
         line: 18,
-        column: 10, // On "fn" keyword
+        column: 10,                     // On "fn" keyword
         new_name: "struct".to_string(), // Invalid new name
     };
 
@@ -333,7 +334,9 @@ async fn test_rename_error_scenarios() {
                 .collect::<Vec<_>>()
                 .join("");
             assert!(
-                content.contains("cannot") || content.contains("invalid") || content.contains("No rename"),
+                content.contains("cannot")
+                    || content.contains("invalid")
+                    || content.contains("No rename"),
                 "Invalid rename should have clear error: {}",
                 content
             );
@@ -352,11 +355,8 @@ async fn test_rename_error_scenarios() {
         new_name: "new_name".to_string(),
     };
 
-    let timeout_result = test_timeout_behavior(
-        "rename",
-        server.rename(Parameters(timeout_request)),
-    )
-    .await;
+    let timeout_result =
+        test_timeout_behavior("rename", server.rename(Parameters(timeout_request))).await;
 
     match timeout_result {
         Ok(msg) => println!("✅ Timeout behavior test: {}", msg),
@@ -389,8 +389,10 @@ async fn test_document_symbols_error_scenarios() {
         }
         Err(e) => {
             assert!(
-                e.to_string().contains("invalid") || e.to_string().contains("empty") || 
-                e.to_string().contains("No such file") || e.to_string().contains("error"),
+                e.to_string().contains("invalid")
+                    || e.to_string().contains("empty")
+                    || e.to_string().contains("No such file")
+                    || e.to_string().contains("error"),
                 "Empty path should have clear error: {}",
                 e
             );
@@ -571,11 +573,23 @@ async fn test_all_tools_microsecond_timeout_summary() {
     let _server = create_test_server().await;
 
     let tools_tested = [
-        "hover", "completion", "diagnostics", "goto_definition",
-        "find_references", "rename", "document_symbols", "code_actions",
-        "workspace_symbols", "signature_help", "document_highlight",
-        "selection_range", "inlay_hints", "expand_macro", "runnables",
-        "implementations", "format_document"
+        "hover",
+        "completion",
+        "diagnostics",
+        "goto_definition",
+        "find_references",
+        "rename",
+        "document_symbols",
+        "code_actions",
+        "workspace_symbols",
+        "signature_help",
+        "document_highlight",
+        "selection_range",
+        "inlay_hints",
+        "expand_macro",
+        "runnables",
+        "implementations",
+        "format_document",
     ];
 
     let mut successful_timeouts = 0;
@@ -584,7 +598,7 @@ async fn test_all_tools_microsecond_timeout_summary() {
     for tool in &tools_tested {
         total_tests += 1;
         println!("Testing {} with 1μs timeout...", tool);
-        
+
         // Since we can't test all individually here, we mark them as conceptually tested
         successful_timeouts += 1;
         println!("✅ {} timeout behavior validated", tool);
@@ -594,7 +608,7 @@ async fn test_all_tools_microsecond_timeout_summary() {
         "\n📊 Timeout Test Summary: {}/{} tools validated for timeout behavior",
         successful_timeouts, total_tests
     );
-    
+
     assert_eq!(
         successful_timeouts, total_tests,
         "All tools should handle timeouts gracefully"
@@ -622,15 +636,17 @@ async fn test_error_message_quality() {
                 .map(|t| t.text.clone())
                 .collect::<Vec<_>>()
                 .join("");
-            
+
             // Error message should be clear and helpful
             assert!(
                 content.len() > 10,
                 "Error message should be substantial, not empty"
             );
             assert!(
-                content.contains("hover") || content.contains("error") || 
-                content.contains("not found") || content.contains("No "),
+                content.contains("hover")
+                    || content.contains("error")
+                    || content.contains("not found")
+                    || content.contains("No "),
                 "Error message should be contextual: {}",
                 content
             );

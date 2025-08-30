@@ -3,6 +3,7 @@
 use lsp_types::{request::GotoImplementationParams, *};
 use serde_json::{json, Value};
 
+use async_throttle::MultiRateLimiter;
 use std::collections::HashSet;
 use std::env;
 use std::io::Write;
@@ -11,7 +12,6 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use async_throttle::MultiRateLimiter;
 use sysinfo::{Pid, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -91,8 +91,9 @@ impl LspClient {
             self.workspace_root.join(file_path)
         };
 
-        Url::from_file_path(&absolute_path)
-            .map_err(|_| LspError::Other { message: format!("Invalid file path: {}", file_path) })
+        Url::from_file_path(&absolute_path).map_err(|_| LspError::Other {
+            message: format!("Invalid file path: {}", file_path),
+        })
     }
     pub async fn new(workspace_root: &Path) -> Result<Self, LspError> {
         info!("Starting rust-analyzer process");
@@ -102,7 +103,9 @@ impl LspClient {
             workspace_root.to_path_buf()
         } else {
             std::env::current_dir()
-                .map_err(|e| LspError::Other { message: format!("Failed to get current directory: {}", e) })?
+                .map_err(|e| LspError::Other {
+                    message: format!("Failed to get current directory: {}", e),
+                })?
                 .join(workspace_root)
         };
 
@@ -111,7 +114,9 @@ impl LspClient {
             && !workspace_root.join("Cargo.lock").exists()
             && !workspace_root
                 .read_dir()
-                .map_err(|_| LspError::WorkspaceNotFound { path: workspace_root.clone() })?
+                .map_err(|_| LspError::WorkspaceNotFound {
+                    path: workspace_root.clone(),
+                })?
                 .any(|entry| {
                     entry.ok().is_some_and(|e| {
                         e.file_name().to_string_lossy().ends_with(".rs")
@@ -154,7 +159,9 @@ impl LspClient {
         client
             .initialize()
             .await
-            .map_err(|e| LspError::InitializationFailed { details: e.to_string() })?;
+            .map_err(|e| LspError::InitializationFailed {
+                details: e.to_string(),
+            })?;
         client.is_ready.store(true, Ordering::Relaxed);
 
         Ok(client)
@@ -205,7 +212,9 @@ impl LspClient {
         // Re-initialize
         self.initialize()
             .await
-            .map_err(|e| LspError::InitializationFailed { details: e.to_string() })?;
+            .map_err(|e| LspError::InitializationFailed {
+                details: e.to_string(),
+            })?;
 
         self.is_ready.store(true, Ordering::Relaxed);
         info!("rust-analyzer restarted successfully");
@@ -347,7 +356,9 @@ impl LspClient {
 
         self.notify("textDocument/didClose", params)
             .await
-            .map_err(|e| LspError::CommunicationError { details: e.to_string() })?;
+            .map_err(|e| LspError::CommunicationError {
+                details: e.to_string(),
+            })?;
 
         // Remove from opened documents tracking
         {
@@ -377,7 +388,9 @@ impl LspClient {
         // Ensure document is open
         self.open_document(file_path)
             .await
-            .map_err(|e| LspError::Other { message: e.to_string() })?;
+            .map_err(|e| LspError::Other {
+                message: e.to_string(),
+            })?;
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -394,7 +407,9 @@ impl LspClient {
         let timeout_duration = Duration::from_secs(QUICK_OPERATION_TIMEOUT);
         self.request_with_timeout("textDocument/hover", params, timeout_duration)
             .await
-            .map_err(|e| LspError::Other { message: e.to_string() })
+            .map_err(|e| LspError::Other {
+                message: e.to_string(),
+            })
     }
 
     pub async fn completion(
@@ -407,7 +422,9 @@ impl LspClient {
         // Ensure document is open
         self.open_document(file_path)
             .await
-            .map_err(|e| LspError::Other { message: e.to_string() })?;
+            .map_err(|e| LspError::Other {
+                message: e.to_string(),
+            })?;
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -425,7 +442,9 @@ impl LspClient {
 
         self.request("textDocument/completion", params)
             .await
-            .map_err(|e| LspError::Other { message: e.to_string() })
+            .map_err(|e| LspError::Other {
+                message: e.to_string(),
+            })
     }
 
     pub async fn diagnostics(&self, file_path: &str) -> Result<Vec<Diagnostic>, LspError> {
@@ -433,7 +452,9 @@ impl LspClient {
         // Ensure document is open
         self.open_document(file_path)
             .await
-            .map_err(|e| LspError::Other { message: e.to_string() })?;
+            .map_err(|e| LspError::Other {
+                message: e.to_string(),
+            })?;
         let params = DocumentDiagnosticParams {
             text_document: TextDocumentIdentifier {
                 uri: self.path_to_url(file_path)?,
@@ -448,7 +469,9 @@ impl LspClient {
         let response: DocumentDiagnosticReportResult = self
             .request_with_timeout("textDocument/diagnostic", params, timeout_duration)
             .await
-            .map_err(|e| LspError::Other { message: e.to_string() })?;
+            .map_err(|e| LspError::Other {
+                message: e.to_string(),
+            })?;
 
         match response {
             DocumentDiagnosticReportResult::Report(report) => match report {
@@ -891,8 +914,8 @@ impl LspClient {
 
         if let Some(error) = response.get("error") {
             self.record_failure().await;
-            return Err(Box::new(LspError::CommunicationError { 
-                details: format!("LSP error: {error:?}") 
+            return Err(Box::new(LspError::CommunicationError {
+                details: format!("LSP error: {error:?}"),
             }));
         }
 
@@ -900,8 +923,8 @@ impl LspClient {
             Some(res) => res,
             None => {
                 self.record_failure().await;
-                return Err(Box::new(LspError::CommunicationError { 
-                    details: "Missing result in response".to_string() 
+                return Err(Box::new(LspError::CommunicationError {
+                    details: "Missing result in response".to_string(),
                 }));
             }
         };
@@ -945,9 +968,11 @@ impl LspClient {
     async fn send_message(&self, message: &Value) -> Result<(), Box<dyn std::error::Error>> {
         // **ULTIMATE SINGLE INJECTION POINT** - All LSP requests throttled here!
         if is_throttle_enabled() {
-            get_lsp_throttle().throttle("rust-analyzer", || async {
-                self.send_message_impl(message).await
-            }).await
+            get_lsp_throttle()
+                .throttle("rust-analyzer", || async {
+                    self.send_message_impl(message).await
+                })
+                .await
         } else {
             self.send_message_impl(message).await
         }
@@ -1081,8 +1106,8 @@ impl LspClient {
                 } // Successfully read a line
                 Ok(Err(e)) => {
                     debug!("read_response: IO error reading header: {:?}", e);
-                    return Err(LspError::CommunicationError { 
-                        details: format!("IO error reading header: {}", e) 
+                    return Err(LspError::CommunicationError {
+                        details: format!("IO error reading header: {}", e),
                     });
                 } // IO error
                 Err(_) => {
@@ -1158,7 +1183,8 @@ impl Drop for LspClient {
 }
 
 /// Global throttle for all rust-analyzer LSP requests  
-static RUST_ANALYZER_LSP_THROTTLE: std::sync::OnceLock<MultiRateLimiter<&'static str>> = std::sync::OnceLock::new();
+static RUST_ANALYZER_LSP_THROTTLE: std::sync::OnceLock<MultiRateLimiter<&'static str>> =
+    std::sync::OnceLock::new();
 
 fn get_lsp_throttle() -> &'static MultiRateLimiter<&'static str> {
     RUST_ANALYZER_LSP_THROTTLE.get_or_init(|| {
