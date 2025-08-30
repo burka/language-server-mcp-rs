@@ -20,6 +20,7 @@ pub static TEST_LSP_CLIENT: Lazy<Arc<Mutex<Option<language_server_mcp::lsp_clien
     Lazy::new(|| Arc::new(Mutex::new(None)));
 
 // Test timeout with automatic hang detection
+#[allow(dead_code)]
 pub async fn with_timeout<T, F>(name: &str, duration: Duration, future: F) -> Result<T, String>
 where
     F: std::future::Future<Output = T>,
