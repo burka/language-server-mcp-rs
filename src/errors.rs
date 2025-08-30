@@ -188,3 +188,9 @@ impl From<std::num::ParseIntError> for LspError {
         LspError::CommunicationError { details: format!("Failed to parse integer: {}", error) }
     }
 }
+
+impl From<String> for LspError {
+    fn from(message: String) -> Self {
+        LspError::Other { message }
+    }
+}

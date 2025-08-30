@@ -44,11 +44,11 @@ pub mod errors_rs {
     pub const FILE: &str = "src/errors.rs";
 
     // Enum definition
-    pub const LSP_ERROR_ENUM: (u32, u32) = (6, 11); // "LspError"
+    pub const LSP_ERROR_ENUM: (u32, u32) = (8, 11); // "LspError"
 
     // Enum variants (good for find_references)
-    pub const RUST_ANALYZER_NOT_FOUND: (u32, u32) = (7, 4); // "RustAnalyzerNotFound"
-    pub const TIMEOUT_ERROR: (u32, u32) = (11, 4); // "TimeoutError"
+    pub const RUST_ANALYZER_NOT_FOUND: (u32, u32) = (10, 4); // "RustAnalyzerNotFound"
+    pub const TIMEOUT_ERROR: (u32, u32) = (22, 4); // "TimeoutError"
 }
 
 /// Non-existent files for error testing
