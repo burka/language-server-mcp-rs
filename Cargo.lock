@@ -699,6 +699,7 @@ dependencies = [
  "glob",
  "lsp-types",
  "once_cell",
+ "regex",
  "rmcp",
  "schemars",
  "serde",
