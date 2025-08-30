@@ -3,9 +3,8 @@
 // MCP Server implementation
 // This module contains the main RustAnalyzerMCP server that implements all tool handlers
 
-use crate::lsp_client::{self, LspClient};
+use crate::domain::{Position, RustAnalyzer};
 use crate::models::*;
-use crate::tool_handlers;
 
 use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::Parameters},
@@ -17,16 +16,15 @@ use rmcp::{
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
-use tokio::time::sleep;
-use tracing::{debug, info, warn};
+use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct RustAnalyzerMCP {
-    lsp_client: Arc<Mutex<LspClient>>,
+    rust_analyzer: Arc<RustAnalyzer>,
     workspace_root: PathBuf,
     tool_router: ToolRouter<RustAnalyzerMCP>,
+    test_start_time: Instant,
 }
 
 #[tool_router]
@@ -36,73 +34,47 @@ impl RustAnalyzerMCP {
             "Initializing rust-analyzer MCP server for workspace: {:?}",
             workspace_root
         );
-        let lsp_client = LspClient::new(&workspace_root)
+        let rust_analyzer = RustAnalyzer::new(workspace_root.clone())
             .await
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-        info!("rust-analyzer LSP client initialized and ready");
+        info!("rust-analyzer domain service initialized and ready");
 
         let server = Self {
-            lsp_client: Arc::new(Mutex::new(lsp_client)),
+            rust_analyzer: Arc::new(rust_analyzer),
             workspace_root,
             tool_router: Self::tool_router(),
+            test_start_time: Instant::now(),
         };
-
-        // Pre-warm the server with diagnostics request for optimal performance
-        server.pre_warm().await;
 
         Ok(server)
     }
 
-    /// Pre-warm rust-analyzer with a diagnostics request for optimal performance
-    /// Based on test results, this reduces total startup time from 72ms to 68ms
-    /// and eliminates most initialization failures
-    async fn pre_warm(&self) {
-        info!("Pre-warming rust-analyzer with diagnostics request...");
-        let start = std::time::Instant::now();
-
-        // Try to find a Rust file to use for pre-warming
-        let prewarm_file = if self.workspace_root.join("src/main.rs").exists() {
-            "src/main.rs".to_string()
-        } else if self.workspace_root.join("src/lib.rs").exists() {
-            "src/lib.rs".to_string()
-        } else {
-            // Fallback - try to find any .rs file
-            let mut fallback_file = "src/main.rs".to_string();
-            if let Ok(entries) = std::fs::read_dir(self.workspace_root.join("src")) {
-                for entry in entries.flatten() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        if name.ends_with(".rs") {
-                            fallback_file = format!("src/{}", name);
-                            break;
-                        }
-                    }
-                }
-            }
-            fallback_file
-        };
-
-        let request = DiagnosticsRequest {
-            file_path: prewarm_file,
-        };
-
-        match tool_handlers::handle_diagnostics(&self.lsp_client, request).await {
-            Ok(_) => {
-                let elapsed = start.elapsed();
-                info!("Pre-warming completed successfully in {:?}", elapsed);
-            }
-            Err(e) => {
-                let elapsed = start.elapsed();
-                debug!(
-                    "Pre-warming had expected initialization error in {:?}: {}",
-                    elapsed, e
-                );
-                // This is expected and OK - the pre-warming still helps performance
-            }
-        }
-    }
 
     pub fn workspace_root(&self) -> &PathBuf {
         &self.workspace_root
+    }
+
+    /// Create a new RustAnalyzerMCP with throttling enabled via environment variables
+    /// Sets RUST_ANALYZER_MCP_THROTTLE=1 and RUST_ANALYZER_MCP_THROTTLE_DELAY_MS
+    pub async fn with_throttling(workspace_root: PathBuf, throttle_delay_ms: u64) -> Result<Self, Box<dyn std::error::Error>> {
+        // Enable throttling via environment variables for this instance
+        std::env::set_var("RUST_ANALYZER_MCP_THROTTLE", "1");
+        std::env::set_var("RUST_ANALYZER_MCP_THROTTLE_DELAY_MS", throttle_delay_ms.to_string());
+        
+        Self::new(workspace_root).await
+    }
+
+    /// Check if throttling is enabled (via environment variable)
+    pub fn is_throttle_enabled(&self) -> bool {
+        std::env::var("RUST_ANALYZER_MCP_THROTTLE").is_ok()
+    }
+
+    /// Get the throttle delay in milliseconds (via environment variable)
+    pub fn get_throttle_delay_ms(&self) -> u64 {
+        std::env::var("RUST_ANALYZER_MCP_THROTTLE_DELAY_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100)
     }
 
     /// Execute a tool handler with automatic retry for any readiness errors
@@ -184,27 +156,52 @@ impl RustAnalyzerMCP {
         error.contains("No ") // Generic "No X available" pattern
     }
 
+    /// Log timing information for tool calls
+    fn log_tool_timing(&self, tool_name: &str, start_time: Instant, result: &str) {
+        let elapsed = start_time.elapsed();
+        let since_test_start = self.test_start_time.elapsed();
+        info!("🕐 TIMING: +{:?} {}ms {}: {}", 
+            since_test_start, 
+            elapsed.as_millis(),
+            tool_name, 
+            result
+        );
+    }
+
     #[tool(description = "Get type information and documentation at a specific position")]
     pub async fn hover(
         &self,
         Parameters(request): Parameters<HoverRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = Arc::clone(&self.lsp_client);
-        match self
-            .execute_with_retry("hover", || {
-                let req = request.clone();
-                let client = Arc::clone(&lsp_client);
-                async move { tool_handlers::handle_hover(&client, req).await }
-            })
-            .await
-        {
-            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+        let start_time = Instant::now();
+        let position = Position {
+            line: request.line,
+            column: request.column,
+        };
+        let result = self.rust_analyzer.hover(&request.file_path, position).await;
+        
+        match result {
+            Ok(Some(hover_info)) => {
+                self.log_tool_timing("hover", start_time, "ok");
+                Ok(CallToolResult::success(vec![Content::text(hover_info.content)]))
+            },
+            Ok(None) => {
+                self.log_tool_timing("hover", start_time, "no_info");
+                Ok(CallToolResult::success(vec![Content::text("No hover information available".to_string())]))
+            },
             Err(e) => {
                 // If we exhausted retries with a semantic readiness issue, return a helpful result instead of error
-                if Self::is_readiness_issue(&e.to_string()) {
+                if e.is_informational() {
+                    self.log_tool_timing("hover", start_time, "readiness_issue");
                     Ok(CallToolResult::success(vec![Content::text(e.to_string())]))
                 } else {
-                    Err(McpError::internal_error(e.to_string(), None))
+                    let error_type = if e.to_string().contains("content modified") {
+                        "content_modified_error"
+                    } else {
+                        "error"
+                    };
+                    self.log_tool_timing("hover", start_time, error_type);
+                    Err(e.to_mcp_error())
                 }
             }
         }
@@ -215,22 +212,43 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<CompletionRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = Arc::clone(&self.lsp_client);
-        match self
-            .execute_with_retry("completion", || {
-                let req = request.clone();
-                let client = Arc::clone(&lsp_client);
-                async move { tool_handlers::handle_completion(&client, req).await }
-            })
-            .await
-        {
-            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
+        let start_time = Instant::now();
+        let position = Position {
+            line: request.line,
+            column: request.column,
+        };
+        let result = self.rust_analyzer.completion(&request.file_path, position).await;
+        
+        match result {
+            Ok(completions) => {
+                if completions.is_empty() {
+                    self.log_tool_timing("completion", start_time, "no_completions");
+                    Ok(CallToolResult::success(vec![Content::text("No completions available".to_string())]))
+                } else {
+                    let formatted_completions: Vec<String> = completions
+                        .into_iter()
+                        .map(|item| {
+                            format!("- {} [{}]: {}", item.label, item.kind, item.detail.unwrap_or_default())
+                        })
+                        .collect();
+                    let content = format!("Completions:\n{}", formatted_completions.join("\n"));
+                    self.log_tool_timing("completion", start_time, "ok");
+                    Ok(CallToolResult::success(vec![Content::text(content)]))
+                }
+            },
             Err(e) => {
                 // If we exhausted retries with a semantic readiness issue, return a helpful result instead of error
-                if Self::is_readiness_issue(&e.to_string()) {
+                if e.is_informational() {
+                    self.log_tool_timing("completion", start_time, "readiness_issue");
                     Ok(CallToolResult::success(vec![Content::text(e.to_string())]))
                 } else {
-                    Err(McpError::internal_error(e.to_string(), None))
+                    let error_type = if e.to_string().contains("content modified") {
+                        "content_modified_error"
+                    } else {
+                        "error"
+                    };
+                    self.log_tool_timing("completion", start_time, error_type);
+                    Err(e.to_mcp_error())
                 }
             }
         }
@@ -241,17 +259,48 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<DiagnosticsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = Arc::clone(&self.lsp_client);
-        match self
-            .execute_with_retry("diagnostics", || {
-                let req = request.clone();
-                let client = Arc::clone(&lsp_client);
-                async move { tool_handlers::handle_diagnostics(&client, req).await }
-            })
-            .await
-        {
-            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        let start_time = Instant::now();
+        let result = self.rust_analyzer.diagnostics(&request.file_path).await;
+
+        match result {
+            Ok(diagnostics) => {
+                if diagnostics.is_empty() {
+                    self.log_tool_timing("diagnostics", start_time, "ok");
+                    Ok(CallToolResult::success(vec![Content::text("No diagnostics found".to_string())]))
+                } else {
+                    let formatted_diagnostics: Vec<String> = diagnostics
+                        .into_iter()
+                        .map(|diag| {
+                            let severity = match diag.severity {
+                                crate::domain::DiagnosticSeverity::Error => "ERROR",
+                                crate::domain::DiagnosticSeverity::Warning => "WARNING", 
+                                crate::domain::DiagnosticSeverity::Information => "INFO",
+                                crate::domain::DiagnosticSeverity::Hint => "HINT",
+                            };
+                            format!("{}:{}-{}: {}: {}", 
+                                diag.range.start.line + 1, 
+                                diag.range.start.column + 1,
+                                diag.range.end.column + 1,
+                                severity,
+                                diag.message)
+                        })
+                        .collect();
+                    let content = format!("Diagnostics ({}):\n{}", 
+                        formatted_diagnostics.len(), 
+                        formatted_diagnostics.join("\n"));
+                    self.log_tool_timing("diagnostics", start_time, "ok");
+                    Ok(CallToolResult::success(vec![Content::text(content)]))
+                }
+            },
+            Err(e) => {
+                let error_type = if e.to_string().contains("content modified") {
+                    "content_modified_error"
+                } else {
+                    "error"
+                };
+                self.log_tool_timing("diagnostics", start_time, error_type);
+                Err(e.to_mcp_error())
+            },
         }
     }
 
@@ -260,17 +309,42 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<GotoDefinitionRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = Arc::clone(&self.lsp_client);
-        match self
-            .execute_with_retry("goto_definition", || {
-                let req = request.clone();
-                let client = Arc::clone(&lsp_client);
-                async move { tool_handlers::handle_goto_definition(&client, req).await }
-            })
-            .await
-        {
-            Ok(content) => Ok(CallToolResult::success(vec![Content::text(content)])),
-            Err(e) => Err(McpError::internal_error(e.to_string(), None)),
+        let start_time = Instant::now();
+        let position = Position {
+            line: request.line,
+            column: request.column,
+        };
+        let result = self.rust_analyzer.goto_definition(&request.file_path, position).await;
+
+        match result {
+            Ok(locations) => {
+                if locations.is_empty() {
+                    self.log_tool_timing("goto_definition", start_time, "no_definitions");
+                    Ok(CallToolResult::success(vec![Content::text("No definition found".to_string())]))
+                } else {
+                    let formatted_locations: Vec<String> = locations
+                        .into_iter()
+                        .map(|loc| {
+                            format!("{}:{}:{}", 
+                                loc.file_path,
+                                loc.range.start.line + 1,
+                                loc.range.start.column + 1)
+                        })
+                        .collect();
+                    let content = format!("Definition(s):\n{}", formatted_locations.join("\n"));
+                    self.log_tool_timing("goto_definition", start_time, "ok");
+                    Ok(CallToolResult::success(vec![Content::text(content)]))
+                }
+            },
+            Err(e) => {
+                let error_type = if e.to_string().contains("content modified") {
+                    "content_modified_error"
+                } else {
+                    "error"
+                };
+                self.log_tool_timing("goto_definition", start_time, error_type);
+                Err(e.to_mcp_error())
+            },
         }
     }
 
@@ -279,17 +353,12 @@ impl RustAnalyzerMCP {
         &self,
         Parameters(request): Parameters<FindReferencesRequest>,
     ) -> Result<CallToolResult, McpError> {
-        let lsp_client = self.lsp_client.lock().await;
-
-        match lsp_client
-            .find_references(
-                &request.file_path,
-                request.line,
-                request.column,
-                request.include_declaration,
-            )
-            .await
-        {
+        let position = Position {
+            line: request.line,
+            column: request.column,
+        };
+        
+        match self.rust_analyzer.find_references(&request.file_path, position, request.include_declaration).await {
             Ok(Some(locations)) => {
                 if locations.is_empty() {
                     Ok(CallToolResult::success(vec![Content::text(

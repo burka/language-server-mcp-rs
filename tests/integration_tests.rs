@@ -33,17 +33,6 @@ async fn create_test_client() -> Result<RunningService<RoleClient, ()>> {
     Ok(client)
 }
 
-/// Test helper to get test file path
-fn get_test_file_path() -> String {
-    std::env::current_dir()
-        .unwrap()
-        .join("examples")
-        .join("test_file.rs")
-        .to_str()
-        .unwrap()
-        .to_string()
-}
-
 /// Test helper to get main.rs file path
 fn get_main_file_path() -> String {
     std::env::current_dir()
@@ -112,16 +101,16 @@ async fn test_server_initialization_and_tool_listing() -> Result<()> {
 #[tokio::test]
 async fn test_hover_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
-    // Test hover on User struct definition
+    // Test hover on Args struct definition
     let hover_result = client
         .call_tool(CallToolRequestParam {
             name: "hover".into(),
             arguments: Some(object!({
                 "file_path": test_file,
-                "line": 12,  // Line with struct User
-                "column": 7  // Position on "User"
+                "line": 13,  // Line with struct Args
+                "column": 7  // Position on "Args"
             })),
         })
         .await?;
@@ -137,7 +126,7 @@ async fn test_hover_tool() -> Result<()> {
 #[tokio::test]
 async fn test_diagnostics_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let diagnostics_result = client
         .call_tool(CallToolRequestParam {
@@ -158,7 +147,7 @@ async fn test_diagnostics_tool() -> Result<()> {
 #[tokio::test]
 async fn test_completion_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let completion_result = client
         .call_tool(CallToolRequestParam {
@@ -181,7 +170,7 @@ async fn test_completion_tool() -> Result<()> {
 #[tokio::test]
 async fn test_goto_definition_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let goto_result = client
         .call_tool(CallToolRequestParam {
@@ -204,7 +193,7 @@ async fn test_goto_definition_tool() -> Result<()> {
 #[tokio::test]
 async fn test_find_references_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let refs_result = client
         .call_tool(CallToolRequestParam {
@@ -228,7 +217,7 @@ async fn test_find_references_tool() -> Result<()> {
 #[tokio::test]
 async fn test_format_document_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let format_result = client
         .call_tool(CallToolRequestParam {
@@ -269,7 +258,7 @@ async fn test_workspace_symbols_tool() -> Result<()> {
 #[tokio::test]
 async fn test_inlay_hints_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let hints_result = client
         .call_tool(CallToolRequestParam {
@@ -290,7 +279,7 @@ async fn test_inlay_hints_tool() -> Result<()> {
 #[tokio::test]
 async fn test_runnables_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let result = client
         .call_tool(CallToolRequestParam {
@@ -320,7 +309,7 @@ async fn test_runnables_tool() -> Result<()> {
 #[tokio::test]
 async fn test_implementations_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let impl_result = client
         .call_tool(CallToolRequestParam {
@@ -361,7 +350,7 @@ async fn test_lsp_status_tool() -> Result<()> {
 #[tokio::test]
 async fn test_document_caching() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     // First call to hover - should open document
     let hover_result1 = client
@@ -408,7 +397,7 @@ async fn test_document_caching() -> Result<()> {
 #[tokio::test]
 async fn test_close_document_tool() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     // First open a document
     let _hover_result = client
@@ -485,7 +474,7 @@ async fn test_error_handling_invalid_file() -> Result<()> {
 #[tokio::test]
 async fn test_error_handling_invalid_position() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
 
     let result = client
         .call_tool(CallToolRequestParam {
@@ -588,7 +577,7 @@ async fn test_timeout_hanging_reproduction() -> Result<()> {
 #[tokio::test]
 async fn test_memory_management() -> Result<()> {
     let client = create_test_client().await?;
-    let test_file = get_test_file_path();
+    let test_file = get_main_file_path();
     let main_file = get_main_file_path();
 
     // Open multiple documents

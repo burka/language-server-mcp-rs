@@ -19,11 +19,10 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // Initialize tracing with fallback to sink if stderr unavailable (e.g., in Claude Code)
-    // This prevents "Broken pipe" panic when stderr is not connected
+    // Initialize tracing with stderr for debugging timing issues
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive(tracing::Level::INFO.into()))
-        .with_writer(std::io::sink) // Use null writer - MCP doesn't need stderr logging
+        .with_writer(std::io::stderr) // Use stderr for debugging
         .with_ansi(false)
         .try_init(); // Silently ignore if already initialized
 

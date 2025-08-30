@@ -1,10 +1,13 @@
 #![deny(dead_code)]
 
 // Library exports for testing
+pub mod domain;   // Domain service layer (business logic)
 pub mod errors;
 pub mod lsp_client;
+pub mod lsp_handler;
 pub mod models;
 pub mod server;
+pub mod throttle_macro;
 pub mod tool_handlers; // MCP server implementation
 
 // Re-export main types for testing

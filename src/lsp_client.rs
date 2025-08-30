@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use async_throttle::MultiRateLimiter;
 use sysinfo::{Pid, System};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -91,7 +92,7 @@ impl LspClient {
         };
 
         Url::from_file_path(&absolute_path)
-            .map_err(|_| LspError::Other(format!("Invalid file path: {}", file_path)))
+            .map_err(|_| LspError::Other { message: format!("Invalid file path: {}", file_path) })
     }
     pub async fn new(workspace_root: &Path) -> Result<Self, LspError> {
         info!("Starting rust-analyzer process");
@@ -101,7 +102,7 @@ impl LspClient {
             workspace_root.to_path_buf()
         } else {
             std::env::current_dir()
-                .map_err(|e| LspError::Other(format!("Failed to get current directory: {}", e)))?
+                .map_err(|e| LspError::Other { message: format!("Failed to get current directory: {}", e) })?
                 .join(workspace_root)
         };
 
@@ -110,7 +111,7 @@ impl LspClient {
             && !workspace_root.join("Cargo.lock").exists()
             && !workspace_root
                 .read_dir()
-                .map_err(|_| LspError::WorkspaceNotFound(workspace_root.clone()))?
+                .map_err(|_| LspError::WorkspaceNotFound { path: workspace_root.clone() })?
                 .any(|entry| {
                     entry.ok().is_some_and(|e| {
                         e.file_name().to_string_lossy().ends_with(".rs")
@@ -153,7 +154,7 @@ impl LspClient {
         client
             .initialize()
             .await
-            .map_err(|e| LspError::InitializationFailed(e.to_string()))?;
+            .map_err(|e| LspError::InitializationFailed { details: e.to_string() })?;
         client.is_ready.store(true, Ordering::Relaxed);
 
         Ok(client)
@@ -204,7 +205,7 @@ impl LspClient {
         // Re-initialize
         self.initialize()
             .await
-            .map_err(|e| LspError::InitializationFailed(e.to_string()))?;
+            .map_err(|e| LspError::InitializationFailed { details: e.to_string() })?;
 
         self.is_ready.store(true, Ordering::Relaxed);
         info!("rust-analyzer restarted successfully");
@@ -346,7 +347,7 @@ impl LspClient {
 
         self.notify("textDocument/didClose", params)
             .await
-            .map_err(|e| LspError::CommunicationError(e.to_string()))?;
+            .map_err(|e| LspError::CommunicationError { details: e.to_string() })?;
 
         // Remove from opened documents tracking
         {
@@ -376,7 +377,7 @@ impl LspClient {
         // Ensure document is open
         self.open_document(file_path)
             .await
-            .map_err(|e| LspError::Other(e.to_string()))?;
+            .map_err(|e| LspError::Other { message: e.to_string() })?;
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -393,7 +394,7 @@ impl LspClient {
         let timeout_duration = Duration::from_secs(QUICK_OPERATION_TIMEOUT);
         self.request_with_timeout("textDocument/hover", params, timeout_duration)
             .await
-            .map_err(|e| LspError::Other(e.to_string()))
+            .map_err(|e| LspError::Other { message: e.to_string() })
     }
 
     pub async fn completion(
@@ -406,7 +407,7 @@ impl LspClient {
         // Ensure document is open
         self.open_document(file_path)
             .await
-            .map_err(|e| LspError::Other(e.to_string()))?;
+            .map_err(|e| LspError::Other { message: e.to_string() })?;
         let params = CompletionParams {
             text_document_position: TextDocumentPositionParams {
                 text_document: TextDocumentIdentifier {
@@ -424,7 +425,7 @@ impl LspClient {
 
         self.request("textDocument/completion", params)
             .await
-            .map_err(|e| LspError::Other(e.to_string()))
+            .map_err(|e| LspError::Other { message: e.to_string() })
     }
 
     pub async fn diagnostics(&self, file_path: &str) -> Result<Vec<Diagnostic>, LspError> {
@@ -432,7 +433,7 @@ impl LspClient {
         // Ensure document is open
         self.open_document(file_path)
             .await
-            .map_err(|e| LspError::Other(e.to_string()))?;
+            .map_err(|e| LspError::Other { message: e.to_string() })?;
         let params = DocumentDiagnosticParams {
             text_document: TextDocumentIdentifier {
                 uri: self.path_to_url(file_path)?,
@@ -447,7 +448,7 @@ impl LspClient {
         let response: DocumentDiagnosticReportResult = self
             .request_with_timeout("textDocument/diagnostic", params, timeout_duration)
             .await
-            .map_err(|e| LspError::Other(e.to_string()))?;
+            .map_err(|e| LspError::Other { message: e.to_string() })?;
 
         match response {
             DocumentDiagnosticReportResult::Report(report) => match report {
@@ -881,24 +882,27 @@ impl LspClient {
                     method, timeout_duration
                 );
                 self.record_failure().await;
-                return Err(Box::new(LspError::TimeoutError(method.to_string())));
+                return Err(Box::new(LspError::TimeoutError {
+                    operation: method.to_string(),
+                    timeout: Duration::from_secs(self.timeout_secs),
+                }));
             }
         };
 
         if let Some(error) = response.get("error") {
             self.record_failure().await;
-            return Err(Box::new(LspError::CommunicationError(format!(
-                "LSP error: {error:?}"
-            ))));
+            return Err(Box::new(LspError::CommunicationError { 
+                details: format!("LSP error: {error:?}") 
+            }));
         }
 
         let result = match response.get("result") {
             Some(res) => res,
             None => {
                 self.record_failure().await;
-                return Err(Box::new(LspError::CommunicationError(
-                    "Missing result in response".to_string(),
-                )));
+                return Err(Box::new(LspError::CommunicationError { 
+                    details: "Missing result in response".to_string() 
+                }));
             }
         };
 
@@ -912,12 +916,11 @@ impl LspClient {
                 result_json.len(),
                 max_size
             );
-            return Err(Box::new(LspError::Other(format!(
-                "Response too large ({} bytes, max {} for {}). Try: smaller file, more specific query, or set RUST_ANALYZER_MCP_MAX_RESPONSE_SIZE env var.",
-                result_json.len(),
+            return Err(Box::new(LspError::ResponseTooLarge {
+                operation: method.to_string(),
+                size: result_json.len(),
                 max_size,
-                method
-            ))));
+            }));
         }
 
         // Success! Reset failure counter
@@ -940,6 +943,18 @@ impl LspClient {
     }
 
     async fn send_message(&self, message: &Value) -> Result<(), Box<dyn std::error::Error>> {
+        // **ULTIMATE SINGLE INJECTION POINT** - All LSP requests throttled here!
+        if is_throttle_enabled() {
+            get_lsp_throttle().throttle("rust-analyzer", || async {
+                self.send_message_impl(message).await
+            }).await
+        } else {
+            self.send_message_impl(message).await
+        }
+    }
+
+    /// The actual message sending implementation (curried)
+    async fn send_message_impl(&self, message: &Value) -> Result<(), Box<dyn std::error::Error>> {
         let content = serde_json::to_string(message)?;
         let header = format!("Content-Length: {}\r\n\r\n", content.len());
 
@@ -1047,7 +1062,10 @@ impl LspClient {
                     "read_response: Overall timeout exceeded after {:?}",
                     overall_timeout
                 );
-                return Err(LspError::TimeoutError("read_response".to_string()));
+                return Err(LspError::TimeoutError {
+                    operation: "read_response".to_string(),
+                    timeout: Duration::from_secs(self.timeout_secs),
+                });
             }
 
             let mut header = String::new();
@@ -1063,10 +1081,9 @@ impl LspClient {
                 } // Successfully read a line
                 Ok(Err(e)) => {
                     debug!("read_response: IO error reading header: {:?}", e);
-                    return Err(LspError::CommunicationError(format!(
-                        "IO error reading header: {}",
-                        e
-                    )));
+                    return Err(LspError::CommunicationError { 
+                        details: format!("IO error reading header: {}", e) 
+                    });
                 } // IO error
                 Err(_) => {
                     // Individual read timed out, continue loop to check overall timeout
@@ -1138,6 +1155,23 @@ impl Drop for LspClient {
     fn drop(&mut self) {
         std::mem::drop(self.process.kill());
     }
+}
+
+/// Global throttle for all rust-analyzer LSP requests  
+static RUST_ANALYZER_LSP_THROTTLE: std::sync::OnceLock<MultiRateLimiter<&'static str>> = std::sync::OnceLock::new();
+
+fn get_lsp_throttle() -> &'static MultiRateLimiter<&'static str> {
+    RUST_ANALYZER_LSP_THROTTLE.get_or_init(|| {
+        let delay_ms = std::env::var("RUST_ANALYZER_MCP_THROTTLE_DELAY_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100); // Increased to 100ms for better reliability
+        MultiRateLimiter::new(Duration::from_millis(delay_ms))
+    })
+}
+
+fn is_throttle_enabled() -> bool {
+    std::env::var("RUST_ANALYZER_MCP_THROTTLE").is_ok()
 }
 
 #[cfg(test)]
@@ -1375,21 +1409,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_response_size_constants() {
-        // Test that response size constants are reasonable for LLM token limits
-        assert!(MAX_RESPONSE_SIZE_BYTES > 0);
-        assert!(MAX_RESPONSE_SIZE_BYTES >= 10 * 1024); // At least 10KB
-        assert!(MAX_RESPONSE_SIZE_BYTES <= 1024 * 1024); // Not more than 1MB
+        // Test exact values of constants
         assert_eq!(MAX_RESPONSE_SIZE_BYTES, 40 * 1024); // 40KB ≈ 10k tokens
-
-        assert!(MAX_LARGE_RESPONSE_SIZE_BYTES > MAX_RESPONSE_SIZE_BYTES);
         assert_eq!(MAX_LARGE_RESPONSE_SIZE_BYTES, 120 * 1024); // 120KB ≈ 30k tokens
-
-        assert!(MAX_SYMBOLS_COUNT > 0);
-        assert!(MAX_SYMBOLS_COUNT <= 10000); // Reasonable limit
         assert_eq!(MAX_SYMBOLS_COUNT, 200); // Exactly 200
-
-        assert!(MAX_COMPLETION_ITEMS > 0);
-        assert!(MAX_COMPLETION_ITEMS <= 200); // Reasonable UX limit
         assert_eq!(MAX_COMPLETION_ITEMS, 25); // Exactly 25
     }
 
@@ -1541,9 +1564,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_max_symbols_count_usage() {
-        // Test that MAX_SYMBOLS_COUNT constant is used and reasonable
-        assert!(MAX_SYMBOLS_COUNT > 0);
-        assert!(MAX_SYMBOLS_COUNT <= 10000); // Reasonable upper bound
+        // Test exact value and calculations
         assert_eq!(MAX_SYMBOLS_COUNT, 200); // Exactly what we expect
 
         // Test that the constant can be used in calculations
@@ -1625,9 +1646,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_completion_items_constant() {
-        // Test MAX_COMPLETION_ITEMS constant
-        assert!(MAX_COMPLETION_ITEMS > 0);
-        assert!(MAX_COMPLETION_ITEMS <= 100);
+        // Test exact value and calculations
         assert_eq!(MAX_COMPLETION_ITEMS, 25);
 
         // Test that it can be used in calculations
