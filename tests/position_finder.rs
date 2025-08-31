@@ -140,6 +140,13 @@ pub struct PositionCache {
 }
 
 #[allow(dead_code)]
+impl Default for PositionCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[allow(dead_code)]
 impl PositionCache {
     pub fn new() -> Self {
         Self {
